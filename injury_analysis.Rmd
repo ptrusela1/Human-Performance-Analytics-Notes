@@ -1,0 +1,836 @@
+---
+title: "Injury Analytics"
+author: "ITAO 40530 - Human Performance Analytics"
+date: "21 March 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Let's first load the packages we are going to use for this analysis:
+
+```{r}
+library(ggplot2) # Load ggplot2
+library(ggdark) #Load ggdark
+library(tidyr) # Load tidyr
+library(xgboost) # Load XGBoost
+library(xgboostExplainer) # Load XGboost Explainer
+library(EnvStats) # Load EnvStats
+library(splines) # Load Splines
+library(grid) # Load grid
+library(gridExtra) # Load grid extra
+library(scales) # Load scales
+```
+
+
+In this analysis we are going to look at answering some of the questions around injury stemming from our previous analysis. We have already identified the key factors that lead to injury however, we are now able to go deeper into the analysis and draw out specific findings and recommendations in this area. 
+
+Let's load the data we are going to use for this analysis:
+
+```{r}
+# Load data from last class
+load("inj_dat_proc.rda")
+```
+
+
+
+## Question 1 - Which players are getting injured?
+
+We can answer this question with some simple summary calculations. First let's calculate the number of injuries per player:
+
+```{r}
+athletes <- players$`Player Name` # Get vector of athletes
+injury_count <- rep(0, length(athletes)) # Create empty vector to store number of injuries for each player
+# For each athlete
+for(i in 1:length(athletes)){
+  # Create sum of injuries for each player
+  injury_count[i] <- sum(inj_dat$injuries_1[admin_dat$players == athletes[i]])
+}
+```
+
+Now we can view this data in a table:
+
+```{r}
+# Join data together
+i_dat <- cbind.data.frame(athletes, players$Position, injury_count)
+# Fix name of second item
+names(i_dat)[2] <- "position"
+# Print result:
+i_dat[order(i_dat$injury_count, decreasing = TRUE),]
+```
+
+We can also visualize this result:
+
+```{r}
+# Re-order factor to display highest injuries at bottom.
+i_dat$athletes <- factor(i_dat$athletes, levels = i_dat$athletes[order(i_dat$injury_count, decreasing = TRUE)])
+
+# Create plot
+g_1 <- ggplot(i_dat, aes(x = athletes, y = injury_count, fill = position)) + # Set aesthetics
+  geom_bar(alpha = 0.8, stat = "identity") + # Set geom_bar with stat identity to use given values
+  coord_flip() + # Flip coordinates
+  labs(x = "Athletes", y = "Count of Injuries", fill = "Position", # Set labels
+       title = "Injury Count by Athlete") +
+    theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank())  # Remove grid 
+# Generate plot
+g_1
+```
+
+From this we can see quite clearly that the bulk of the injuries are occurring for midfielders. Goal keepers are also high risk while strikers are low risk. Defenders have players who suffer a very low and high number of injuries. 
+
+## Question 2 - What part of the season are these injuries occuring in?
+
+Next we want to look at what part of the season are the injuries occurring in. A interesting secondary aspect will be to see if this differs per position.
+Let's start to build up an injury specific data frame:
+
+```{r}
+# Add position to admin_dat
+position_vec <- rep(NA, nrow(admin_dat))
+# For each player
+for(i in 1:nrow(i_dat)){
+  # Store position in position vector
+  position_vec[admin_dat$players == i_dat$athletes[i]] <- i_dat$position[i]
+}
+# Add position to admin data
+admin_dat$position <- position_vec
+
+# Join admin and met dat for injuries
+i_dat_2 <- cbind.data.frame(admin_dat[inj_dat$injuries_1 == 1,], met_dat[inj_dat$injuries_1 == 1,])
+```
+
+For this plot we want to add a background to the plot to reveal what part of the season the injury occurs in. To do this we can set geom_rect in the ggplot object. Let's create the data we are going to need for this:
+
+```{r}
+# Create geom rect
+rect_dat <- data.frame(xmin = c(1, 21, 124, 245, 319, 367, 396, 489, 609),
+                       xmax = c(20,123, 244, 318, 366, 395, 488, 608, 687),
+                       season_part = c("pre_season", "early_season", "mid_season", "late_season", "off_season",
+                                       "pre_season", "early_season", "mid_season", "late_season"))
+# Order season part
+rect_dat$season_part <- factor(rect_dat$season_part, level = c("pre_season", "early_season", "mid_season", "late_season", "off_season"))
+```
+
+Let's first try visualizing this with a density plot:
+```{r}
+# Create plot
+g_2 <- ggplot(i_dat_2, aes(x = days)) + # Set dataset and aesthetics
+  geom_rect(data = rect_dat, aes(xmin = xmin, xmax = xmax, # Set geom rectangle
+                ymin = 0, ymax = Inf,
+                fill = season_part), inherit.aes = FALSE, # Color by season part
+            alpha = 0.5, # Make transperant
+            show.legend = TRUE) +
+    scale_fill_manual(values = c("pre_season" = "red4", "early_season" = "darkorange4",  # Set colors for background
+                                 "mid_season" = "magenta1",
+                               "late_season" = "firebrick1", "off_season" = "slateblue1"),
+                      labels = c("pre_season" = "Pre-Season", "early_season" = "Early-Season", # Set labels for background
+                                 "mid_season" = "Mid-Season",
+                               "late_season" = "Late-Season", "off_season" = "Off-Season")) +
+   geom_density(alpha = 0.3, fill = "blue") + # Add density to plot
+  labs(x = "Days", y = "Injuries", fill = "Season\nPart", # Set labels for plot 
+     title = "Injuries by Season Part") +
+    facet_wrap(~position, nrow = 4) + # Set facet wrap to separate by position
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+dark_theme_bw() # Turn theme to dark mode
+
+# Generate plot
+g_2
+
+# Turn off dark mode
+invert_geom_defaults()
+```
+
+This looks good but there may be too much smoothing going on, let' see how it looks with a histogram:
+
+```{r}
+# Create plot
+g_3 <- ggplot(i_dat_2, aes(x = days)) + # Set dataset
+  geom_rect(data = rect_dat, aes(xmin = xmin, xmax = xmax, # Add background rectangles
+                ymin = 0, ymax = Inf,
+                fill = season_part), inherit.aes = FALSE, # Set fill as season part
+            alpha = 0.5, # Make transperant
+            show.legend = TRUE) +
+    scale_fill_manual(values = c("pre_season" = "red4", "early_season" = "darkorange4",  # Set background colors
+                                 "mid_season" = "magenta1",
+                               "late_season" = "firebrick1", "off_season" = "slateblue1"),
+                      labels = c("pre_season" = "Pre-Season", "early_season" = "Early-Season", # Set background color labels
+                                 "mid_season" = "Mid-Season",
+                               "late_season" = "Late-Season", "off_season" = "Off-Season")) +
+   geom_histogram(alpha = 0.9, # Set histogram
+                  fill = "white", # Set fill as white to make visible in dark mode
+                  color = "black", # Add black lines around bars
+                  binwidth = 7) + # Set bin width to 7 to capture a week at a time
+  labs(x = "Days", y = "Injuries", fill = "Season\nPart", # Set labels 
+     title = "Injuries by Season Part") +
+    facet_wrap(~position, scales = "free", nrow = 4) + # Set facet wrap to split by position
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+dark_theme_bw() # Add dark mode
+
+# Generate plot
+g_3
+
+# Turn off dark mode
+invert_geom_defaults()
+```
+
+This is likely a better view. Here we can see that the bulk of injuries for all players occur in the pre-season, with the earlier part of the early season also having a high proportion of injuries. There are also a few injuries occurring late in the season. 
+
+This could indicate an issue with the pre-season training. In addition it does give some hope that these injuries can be avoided as the pre-season is an area of the season where we have more control over athlete activities. 
+
+Let's visualize metrics by part of season
+
+```{r}
+# Join datasets together for plotting
+p_dat_1 <- cbind.data.frame( inj_dat$injuries_1, admin_dat$season_part, met_dat[,1:5])
+# Set names for plot data
+names(p_dat_1) <- c("injury", "season_part", names(met_dat)[1:5])
+# Set factor levels fo part of the season
+p_dat_1$season_part <- factor(p_dat_1$season_part, levels = c("pre_season", "early_season", "mid_season", "late_season", "off_season"))
+# Convert data to long form
+m_dat <- pivot_longer(p_dat_1, cols = total_distance:decelerations)
+# View pivoted data
+head(m_dat)
+```
+
+```{r}
+# Create plot
+g_4 <- ggplot(m_dat[m_dat$value != 0,], # Select data where metric value is not zero
+              aes(x = season_part, y = value, fill = season_part)) + # Set aesthetics
+  geom_boxplot() + # Set boxplot
+   scale_fill_manual(values = c("pre_season" = "red4", # Set fill colors
+                                "early_season" = "darkorange4",  
+                                 "mid_season" = "magenta1",
+                               "late_season" = "firebrick1" ),
+                      labels = c("pre_season" = "Pre-Season", # Set fill labels
+                                 "early_season" = "Early-Season", 
+                                 "mid_season" = "Mid-Season",
+                               "late_season" = "Late-Season" )) +
+  facet_wrap(~name, scales = "free") + # Facet wrap by metric
+  coord_flip() + # Flip coordinates
+  theme_bw() +  # Set theme as black and white
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Season\nPart", y  = "Metric Value", # Set labels
+       title = "Base Metric Levels by Part of Season") + 
+  guides(fill = FALSE) # Turn off legend for fill
+# Generate plot
+g_4
+```
+
+From this graph it looks like the pre-season involves longer sessions with less high speed running. Conversely, during the mid-season when we see less injuries it looks like there are shorter sessions and more high speed running. 
+
+## What does player activity look like prior to injury
+
+Now we want to focus in on what player metrics look like leading up to injury days. First we want to calculate the number of days till an injury occurs for each player
+
+```{r}
+# Create empty vector to store result
+days_to_injury <- rep(NA, nrow(admin_dat))
+# Set days since as 0
+days_since <- 0
+# From 2nd last row to first row
+for(i in (nrow(admin_dat)-1):1){
+  # If player is the same as player on last row
+  if(admin_dat$players[i] == admin_dat$players[i+1]){
+    # If row before is injury
+    if(inj_dat$injuries_1[i+1] == 1){
+      # Set days since as 1
+    days_since <- 1
+    # If current row is injury
+    } else if (inj_dat$injuries_1[i] == 1){
+      # Set days since as 0
+      days_since <- 0
+      # Store 0 days
+      days_to_injury[i] <- days_since
+    }
+    # If days since is greater than 0
+    if(days_since >0){
+      # Store days since
+      days_to_injury[i] <- days_since
+      # Increment days as 0
+      days_since <- (admin_dat$days[i] - admin_dat$days[i - 1]) + days_since
+    }
+    # If athlete changes
+  } else {
+    # Reset days since to 0
+    days_since <- 0
+  }
+}
+```
+
+Now let's visualize what metric levels look like leading up to injury:
+
+```{r}
+# Create plot data by joining data together
+p_dat <- cbind.data.frame(inj_dat$injuries_1, days_to_injury, admin_dat, met_dat)
+# Rename first column
+names(p_dat)[1] <- "Injury"
+# Create alpha vector as 0.1
+p_dat$alpha_vec  <- rep(0.1)
+# Set ot 0.5 in days prior to injury
+p_dat$alpha_vec[p_dat$days_to_injury <= 7] <- 0.5
+# Set as 1 for injury days
+p_dat$alpha_vec[p_dat$Injury == 1] <- 1
+# Create color vector as blue
+p_dat$color_vec <- "blue"
+# Set to orange for days prior to injury
+p_dat$color_vec[p_dat$days_to_injury <= 7] <- "orange"
+# Set as red for injury days
+p_dat$color_vec[p_dat$Injury == 1] <- "red"
+
+# Create plot
+g_5 <- ggplot(p_dat[p_dat$days < 320,],  # Select data from first season
+              aes(x = days, y = HSR_ac_28_56, # Set aesthetics
+                  color = color_vec, alpha = alpha_vec )) + 
+  geom_point() + # Set geom point
+  scale_color_manual(values = c("blue" = "blue", # Set colors
+                                "red" = "red", 
+                                "orange" = "orange"),
+                     labels = c("blue" = "healthy", # Set color labels
+                                "red" = "Injury", 
+                                "orange"= "Injury Risk")) +
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "days", y="HSR A:C 28:56", color = "Injury Risk", # Set labels and titles
+       title = "High Speed Running and Injury - Season 1",
+       subtitle = "A:C 28:56") +
+  guides(alpha = FALSE) # Turn off legend for alpha
+# Generate plot
+g_5
+```
+
+From this plot we can see that the initial days of the pre-season in the first year were where a large proportion of injuries occurred, when players were just starting back at training. We also see several injuries later in the season as players metrics start to increase again with a heavier schedule. 
+
+Let's regenerate the plot for the second season:
+
+```{r}
+# Create plot
+g_6 <- ggplot(p_dat[p_dat$days > 320,], # Select data from the second season
+              aes(x = days, y = HSR_ac_28_56, # Set aesthetics
+                  color = color_vec, alpha = alpha_vec )) +
+  geom_point() + # Add geom_point for scatter plot
+  scale_color_manual(values = c("blue" = "blue", # Set color values
+                                "red" = "red", 
+                                "orange" = "orange"),
+                     labels = c("blue" = "healthy",  # Set color labels
+                                "red" = "Injury", 
+                                "orange"= "Injury Risk")) +
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "days", y="HSR A:C 28:56", color = "Injury Risk", # Set plot labels and title
+       title = "High Speed Running and Injury Risk - Season 2",
+       subtitle = "A:C 28:56") +
+  guides(alpha = FALSE) # Turn off legend for alpha
+# Generate plot
+g_6
+```
+
+Here we again see many injuries in the preseason, as well as a couple of injuries later in the season when players appear to be in general increasing the amount of high-speed running they are doing. 
+
+Let's check out how this graph looks for total distance:
+
+```{r}
+# Create plot
+g_7 <- ggplot(p_dat[p_dat$days < 320,], # Select data just from the first season
+              aes(x = days, y = total_distance_ac_28_56, # Set aesthetics
+                  color = color_vec, alpha = alpha_vec )) +
+  geom_point() + # Set geom_point for scatter plot
+  scale_color_manual(values = c("blue" = "blue", # Set color values
+                                "red" = "red", 
+                                "orange" = "orange"),
+                     labels = c("blue" = "healthy",  # Set color labels
+                                "red" = "Injury", 
+                                "orange"= "Injury Risk")) +
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "days", y="Total Distance A:C 28:56", # Set plot labels
+       color = "Injury Risk",
+       title = "Total Distance and Injury - Season 1",
+       subtitle = "A:C 28:56") +
+  guides(alpha = FALSE) # Turn off legend for alpha
+# Generate plot
+g_7
+```
+
+Again we see significant injuries at the start of the season with so injuries at higher levels of total distance towards the end of the season. Let's view this graph for the second season
+
+```{r}
+# Create plot
+g_8 <- ggplot(p_dat[p_dat$days >= 320,], # Select data from just second season
+              aes(x = days, y = total_distance_ac_28_56, # Set aesthetics
+                  color = color_vec, alpha = alpha_vec )) +
+  geom_point() + # Set geom point for scatter plot
+  scale_color_manual(values = c("blue" = "blue", # Set color values
+                                "red" = "red",
+                                "orange" = "orange"),
+                     labels = c("blue" = "healthy", # Set color labels 
+                                "red" = "Injury", 
+                                "orange"= "Injury Risk")) +
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "days", # Set plot labels 
+       y="Total Distance A:C 28:56",
+       color = "Injury Risk",
+       title = "Total Distance and Injury - Season 2",
+       subtitle = "A:C 28:56") +
+  guides(alpha = FALSE) # Turn off legend for alpha
+# Generate plot
+g_8
+```
+
+Here we again see many injuries in the pre-season and early season at high levels. For the in-season injuries it appears as if this metric has little explanatory power. 
+
+Let's view the time line for the sum of total distance over 28 days instead of the A:C ratio:
+
+```{r}
+# Create plot
+g_9 <- ggplot(p_dat[p_dat$days < 320,], # Select data from first half of the season
+              aes(x = days, y = total_distance_sum_28_days, # Set aesthetics
+                  color = color_vec, alpha = alpha_vec )) +
+  geom_point() + # Set geom point for scatter plot
+  scale_color_manual(values = c("blue" = "blue", # Set color values
+                                "red" = "red",
+                                "orange" = "orange"),
+                     labels = c("blue" = "healthy", # Set color labels
+                                "red" = "Injury", 
+                                "orange"= "Injury Risk")) +
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "days", y="Total Distance - Sum 28 Days", # Set plot labels
+       color = "Injury Risk",
+       title = "Total Distance and Injury - Season 1",
+       subtitle = "Sum - 28 Days") +
+  guides(alpha = FALSE) # Turn off legend for alpha
+# Generate plot
+g_9
+```
+
+Here we can see that in-season injuries generally occur at the higher levels of total distance done during the season with the vast majority of injuries and the days leading up to them occurring in this part of the graph. 
+
+```{r}
+# Create plot
+g_10 <- ggplot(p_dat[p_dat$days >= 320,], # Select data for second season
+               aes(x = days, y = total_distance_sum_28_days,  # Set aesthetics
+                   color = color_vec, alpha = alpha_vec )) + 
+  geom_point() + # Add geom point to create a scatter plot
+  scale_color_manual(values = c("blue" = "blue", # Set color values 
+                                "red" = "red", 
+                                "orange" = "orange"),
+                     labels = c("blue" = "healthy", # Set color labels 
+                                "red" = "Injury", 
+                                "orange"= "Injury Risk")) +
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "days",  # Set plot labels
+       y="Total Distance - Sum 28 Days",
+       color = "Injury Risk",
+       title = "Total Distance and Injury - Season 2",
+       subtitle = "Sum - 28 Days") +
+  guides(alpha = FALSE) # Turn off legend for alpha
+# Generate plot
+g_10
+```
+
+Again we see all of the in-season injuries occurring at higher levels of the total distance sum over 28 days.
+
+Let's view what the HSR running sum looks like. For this we will just use a 7-day sum. 
+
+```{r}
+# Create plot
+g_11 <- ggplot(p_dat[p_dat$days < 320,],  # Select data from first season
+               aes(x = days, y = HSR_sum_7_days, # Set aesthetics
+                   color = color_vec, alpha = alpha_vec )) +
+  geom_point() + # Set geom_point for scatter plot
+  scale_color_manual(values = c("blue" = "blue", # Set color values 
+                                "red" = "red",
+                                "orange" = "orange"),
+                     labels = c("blue" = "healthy", # Set color labels
+                                "red" = "Injury", 
+                                "orange"= "Injury Risk")) +
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "days", y="High Speed Running - Sum 7 Days", # Set plot labels 
+       color = "Injury Risk",
+       title = "High Speed Running - Season 1",
+       subtitle = "Sum - 7 Days") +
+  guides(alpha = FALSE) # Turn off legend for alpha
+# Generate plot
+g_11
+```
+
+Here we see that in-season injuries generally occur at higher levels of high-speed running within the last 7 days. Let's view this plot for the second season:
+
+```{r}
+# Create plot
+g_12 <- ggplot(p_dat[p_dat$days >= 320,], # Select data from second season
+               aes(x = days, y = HSR_sum_7_days,  # Set aesthetics
+                   color = color_vec, alpha = alpha_vec )) +
+  geom_point() + # Set geom point for scatter plot
+  scale_color_manual(values = c("blue" = "blue", # Set color values 
+                                "red" = "red", 
+                                "orange" = "orange"),
+                     labels = c("blue" = "healthy", # Set color labels
+                                "red" = "Injury", 
+                                "orange"= "Injury Risk")) +
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "days", y="High Speed Running - Sum 7 Days", # Set plot labels
+       color = "Injury Risk",
+       title = "High Speed Running - Season 2",
+       subtitle = "Sum - 7 Days") +
+  guides(alpha = FALSE) # Turn off legend for alpha
+# Generate plot
+g_12
+```
+
+Here the in-season injuries are more varied, with some occurring at high levels and some occurring at medium levels. However, towards the end of the season we see several injuries occurring at high levels. 
+
+# Risk Zones
+
+Athletic coaches and trainers often like to have certain thresholds for which they can aim to keep players below while still maximizing their fitness and readiness levels. While not an ideal use of results since it is simplifying a very complex problem, we can use the results of our previous analysis to generate injury risk zones for the most important metrics. 
+
+Note - Code contained in separate script. 
+
+Let's generate risk zones for several of the most important variables which we found in our SHAP importance plot:
+
+![](Injury_plot_HSR_ac_28_56.jpeg)
+For the high-speed running long term (28:56) A:C ratio we see a significant increase in risk around 1.25. Thus we would recommend for the trainers and performance staff to aim to keep the A:C ratio below this value throughout the season to avoid injury. 
+
+
+
+![Total Distance A:C 28:56](Injury_plot_total_distance_ac_28_56.jpeg)
+For the total distance long term (28:56) A:C ratio we see a significant increase in risk around 1.2/1.25. Thus we would recommend for the trainers and performance staff to aim to keep the A:C ratio below this value throughout the season to avoid injury. 
+
+
+
+![HSR A:C 7:21](Injury_plot_HSR_ac_7_21.jpeg)
+We see a wider risk region for the short term (7:21) high-speed running A:C ratio with a minor risk around 1.2, an moderate risk from 1.5 - 1.7 and high risk above 1.7. Thus trainers should aim to keep players below 1.5/1.7 throughout the season and only stray above 1.2 if it is demanded by competition. 
+
+
+
+
+![Total Time A:C 28:56](Injury_plot_total_time_ac_28_56.jpeg)
+The total time A:C ratio is quite similar to the total distance A:C ratio and so trainers should aim to keep players below 1.2/1.25 during the season. 
+
+
+
+![Decelerations A:C 28:56](Injury_plot_decelerations_ac_28_56.jpeg)
+For deceleration we see a move to from low to high risk around 1.3-1.4, thus trainers should aim to keep players below this threshold throughout the season. 
+
+## What activities are contributing most to injury risk
+
+The next question to ask is what activities that the player are partaking in are contributing the most to the injury risk. That is, what activities are leading to increases in the metrics which are related to injury risk. 
+
+
+```{r}
+# Extract unique events
+types <- unique(admin_dat$event)
+# Extract unique positions
+positions <- unique(admin_dat$position)
+# Create table of combinations
+pos_types <- expand.grid(types, positions)
+# Name combinations
+names(pos_types) <- c("type", "position")
+# Create matrix to store results
+mean_mat <- as.data.frame(matrix(NA, nrow = nrow(pos_types), ncol = 5))
+# Name coluns in result matrix
+names(mean_mat)[1:5] <- names(met_dat)[1:5]
+
+# For each position and event
+for(i in 1:nrow(pos_types)){
+  # Calculate mean value for total distance
+      mean_mat$total_distance[i] <- mean(
+        met_dat$total_distance[which(admin_dat$event == pos_types$type[i] & 
+                                     met_dat$total_distance != 0 &
+                                     admin_dat$position == pos_types$position[i])], 
+        na.rm = T)
+    # Calculate mean value for total time  
+      mean_mat$total_time[i] <- mean(
+        met_dat$total_time[which(admin_dat$event == pos_types$type[i] &
+                                 met_dat$total_time != 0 &
+                                 admin_dat$position == pos_types$position[i])], 
+        na.rm = T)
+      # Calculate mean value for HSR
+      mean_mat$HSR[i] <- mean(
+        met_dat$HSR[which(admin_dat$event == pos_types$type[i] &
+                          met_dat$HSR != 0 &
+                          admin_dat$position == pos_types$position[i])], 
+        na.rm = T)
+      # Calculate mean value for accelerations
+        mean_mat$accelerations[i] <- mean(
+          met_dat$accelerations[which(admin_dat$event == pos_types$type[i] & 
+                                      met_dat$accelerations != 0 &
+                                      admin_dat$position == pos_types$position[i])], 
+        na.rm = T)
+        # Calculate mean value for decelerations
+          mean_mat$decelerations[i] <- mean(
+            met_dat$decelerations[which(admin_dat$event == pos_types$type[i] & 
+                                        met_dat$decelerations != 0 &
+                                        admin_dat$position == pos_types$position[i])], 
+        na.rm = T)
+}
+
+# Join combinations and result matrix
+res <- cbind.data.frame(pos_types, mean_mat)
+# Print out table
+res
+```
+
+From this it looks like, we are doing far too much high-speed running during regular training, and far too much distance in the intense training sessions. Likely a solution to this would be to drop the amount of high speed running done in standard training and increase it in intense training sessions while dropping the total distance covered to make it more similar to match level stats. 
+
+Let's plot this out for a couple of variables:
+
+```{r}
+# Join data to create plot data
+p_dat <- cbind.data.frame(admin_dat, met_dat)
+
+# Create plot
+g_13 <- ggplot(p_dat[p_dat$total_distance > 0,], # Select rows where metric is not 0
+               aes(x = position, y = total_distance, fill = event)) + # Set aesthetics
+  geom_boxplot() + # Set boxplot
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Position", y="Total Distance",  # Set labels
+       fill = "Event\nType",
+       title = "Total Distance by Session Type") +
+  scale_fill_manual(values = c("Light Training" = "lightblue", # Set colors
+                               "Standard Training" = "blue",
+                               "Game Prep" = "orange", 
+                               "Intense Training" = "darkblue",
+                               "Recovery" = "yellow", 
+                               "Match" = "red")) +
+  coord_flip() # Flip coordinates
+# Generate plot
+g_13
+```
+
+From this we can see that intense training sessions result in a higher distance covered than the vast majority of games, regularly exceeding the maximum distance covered during a game. A standard training session appears to cover less distance than is run in a game. 
+
+Let's view the same plot for high-speed running. 
+
+```{r}
+# Create plot
+g_14 <- ggplot(p_dat[p_dat$HSR > 0,], # Select rows where metric is not 0
+               aes(x = position, y = HSR, fill = event)) + # Set aesthetics
+  geom_boxplot() + # Set boxplot
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Position", y="HSR",  # Set labels
+       fill = "Event\nType",
+       title = "High Speed Running by Session Type") +
+  scale_fill_manual(values = c("Light Training" = "lightblue", # Set colors
+                               "Standard Training" = "blue",
+                               "Game Prep" = "orange", 
+                               "Intense Training" = "darkblue",
+                               "Recovery" = "yellow", 
+                               "Match" = "red")) +
+  coord_flip() # Flip coordinates
+# Generate plot
+g_14
+
+```
+
+Here we see that the amount of high-speed running done in game generally exceeds that of any other session type. This could lead to high A:C ratio values in periods where there is a large quantity of games in a small time frame. In this case players are unlikely to be prepared for this level of exertion. 
+
+Finally let's view this plot for decelerations:
+
+```{r}
+# Create plot
+g_15 <- ggplot(p_dat[p_dat$decelerations > 0,], # Select rows where metric is not 0
+               aes(x = position, y = decelerations, fill = event)) + # Set aesthetics
+  geom_boxplot() + # Set boxplot
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Position", y="Decelerations",  # Set labels
+       fill = "Event\nType",
+       title = "Decelerations by Session Type") +
+  scale_fill_manual(values = c("Light Training" = "lightblue", # Set colors
+                               "Standard Training" = "blue",
+                               "Game Prep" = "orange", 
+                               "Intense Training" = "darkblue",
+                               "Recovery" = "yellow", 
+                               "Match" = "red")) +
+  coord_flip() # Flip coordinates
+# Generate plot
+g_15
+
+
+```
+
+Similar to total distance we see that there is a far higher amount of decelerations in intense training sessions than in other aspects, this could be contributing significantly to injury risk.
+
+
+
+# Recommendations
+
+From our analysis we could recommend the following actions to be taken by the coaching and performance staff:
+
+* Maintain a slower build up in intensity during the pre-season. This is the time period when the majority of players are getting injured is the part of the season which is most under our control. These injuries are likely due to players returning from time off an engaging in high intensity or high duration activities prior to them being ready to do so. Additionally players could be given an off-season exercise program to complete to ensure that they do not return in such a low state of fitness. 
+
+* Player monitoring - Players and their calculated metrics should be continuously monitored during the season to ensure that they are not entering high risk regions in terms of A:C ratios, particularly for high-speed running, total distance and decelerations. 
+
+* Training changes: Total Distance - The amount of distance players are covering in the intense training sessions represents significant volume and this is likely contributing to increased injury risk during the pre-season and late in the season. The proportion of high intensity training sessions should be reduced late in the season, early in the preseason and during periods of the season where there are a considerable number of games.
+
+* Training changes: High-Speed Running - Players are doing far more high-speed running in-game than they are during training. This is leaving players un-prepared for condensed periods of games. As such more high-speed running should be included in training sessions so that players are ready for the demands of competition. 
+
+
+## Exercises 
+
+* Recreate timeline plots to show deviation from mean value for sum variables - Use the dev_base_db object for metrics.
+
+```{r}
+# Extract vector of unique players
+athletes <- unique(admin_dat$players)
+
+# Create data frame to store results
+base_data <- as.data.frame(matrix(NA, nrow = length(athletes), ncol = ncol(met_dat)))
+names(base_data) <- names(met_dat) # Add names to result data frame
+
+# For each player
+for(i in 1:length(athletes)){
+  # For each metric
+  for(j in 1:ncol(base_data)){
+    # Calculate mean value for the player and metric
+    base_data[i,j] <- mean(met_dat[admin_dat$players == athletes[i], j], na.rm =T)
+  }
+}
+
+# Create deviation data frame to store results
+dev_base_db <- as.data.frame(matrix(NA, nrow = nrow(met_dat), ncol = ncol(met_dat)))
+names(dev_base_db) <- names(met_dat) # Add names to result data frame
+
+# For each player
+for(i in 1:length(athletes)){
+  # Calculate deviation as their metrics divided by their baseline stats
+  dev_base_db[admin_dat$players == athletes[i],] <- met_dat[admin_dat$players == athletes[i],]/base_data[rep(i, sum(admin_dat$players == athletes[i])),]
+}
+# Set names
+names(dev_base_db) <- paste(names(dev_base_db), "_dev", sep = "")
+```
+
+Try this for sum 7 and sum 28 days for high-speed running and total distance.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+* What patterns are apparent here:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
