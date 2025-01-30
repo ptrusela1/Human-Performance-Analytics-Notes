@@ -1,0 +1,1083 @@
+---
+title: "Data Simulation"
+author: "ITAO 40530 - Human Performance Analytics"
+date: "20 March 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Set-up
+
+Let's first load the packages we will be using for this analysis:
+
+```{r}
+library(ggplot2) # Load ggplot2
+library(ggridges) # Load ggridges
+```
+
+
+For this analysis we will be returning to the dataset we used last week. Let's load the dataset after calculations have been made:
+
+```{r}
+# Load the post calculation Data
+load("post_calc_data.rda")
+```
+
+## Simulating Data
+
+Now that we have our calculated data we now want to simulate some stats for:
+
+* Nordic force (Hamstring)
+* Imbalance for Nordic Force
+* Take-off power (Drop-jump test)
+* Jump Height
+
+Simulating data can be a very useful tool for testing the ability of models to detect patterns in data when we do not have access to the data itself. Ideally we would like the simulated data which we create to mimic real world patterns. However, simulating data gives us control over two aspects which we are unable to find in real world data:
+
+* Control of the patterns which are present in the data.
+* Control over the level of noise in the data which controls the accuracy of the model. 
+
+Using simulated data we are able to judge at what level of noise our models will be able or unable to detect the patterns which are present.
+
+### Creating player baselines
+
+Let's generate some baselines for each of the players GPS metrics which we already have.
+
+```{r}
+# Extract vector of unique players
+athletes <- unique(admin_dat$players)
+
+# Create data frame to store results
+base_data <- as.data.frame(matrix(NA, nrow = length(athletes), ncol = ncol(met_dat)))
+names(base_data) <- names(met_dat) # Add names to result data frame
+
+# For each player
+for(i in 1:length(athletes)){
+  # For each metric
+  for(j in 1:ncol(base_data)){
+    # Calculate mean value for the player and metric
+    base_data[i,j] <- mean(met_dat[admin_dat$players == athletes[i], j], na.rm =T)
+  }
+}
+
+```
+
+Next let's calculate the deviation from the baseline for each player for each metric on a given day:
+
+```{r}
+# Create deviation data frame to store results
+dev_base_db <- as.data.frame(matrix(NA, nrow = nrow(met_dat), ncol = ncol(met_dat)))
+names(dev_base_db) <- names(met_dat) # Add names to result data frame
+
+# For each player
+for(i in 1:length(athletes)){
+  # Calculate deviation as their metrics divided by their baseline stats
+  dev_base_db[admin_dat$players == athletes[i],] <- met_dat[admin_dat$players == athletes[i],]/base_data[rep(i, sum(admin_dat$players == athletes[i])),]
+}
+```
+
+
+## Simulate Nordic Force
+
+Some of the factors which are likely to play a role in Nordic strength are: 
+
+* Athlete speed and strength
+* Physical readiness/recent activity
+* Phase of the season
+
+We know for professional athletes that the Nordic force values generally fall in the range of:
+
+* minimum: 220
+* 1st quartile: 350
+* Mean: 401
+* 3rd quartile: 448
+* Max: 560
+
+
+Let's generate some factors which we can use to simulate a players strength level:
+
+#### Speed and Strength
+
+It is likely that both the speed and strength of an athlete play a positive role in the Nordic force exercise with strength likely being the stronger of the two. We can use our subjective ratings of speed and strength to generate ratings as follows:
+
+* (25% Speed + 75% Strength)/10
+
+Thus we will use 25% of the athletes speed score and 75% of the players strength score to generate what percentile of the Nordic force distribution they have as a baseline. 
+
+```{r}
+# Baseline_1 - Speed and Strength
+baseline_1 <- ((0.25 * players$Speed)  + (0.75 * players$Strength))/10
+```
+
+We can then use this baseline to create mean Nordic force values for players:
+
+```{r}
+# Create a vector to store results
+nordic_force_mean_val <- rep(NA, nrow(admin_dat))
+nordic_force_base <- rep(NA, nrow(players))
+# Create a vector with values in 25-75% range of the metric
+nordic_force_vec <- rep(350:448)
+
+# For each row
+for(i in 1:length(athletes)){
+  # Create mean values for each player
+  nordic_force_base[i] <- quantile(nordic_force_vec, probs = baseline_1[i])
+  # Create mean values for each day
+  nordic_force_mean_val[admin_dat$players == athletes[i]] <- rep(nordic_force_base[i], sum(admin_dat$players == athletes[i]))
+  
+}
+```
+
+Let's sanity check our mean values for each player:
+
+```{r}
+# Join nordic force with name and position columns
+plot_dat_1 <- cbind.data.frame(players[, c("Player Name", "Position")], nordic_force_base)
+# Rename plot data columns
+names(plot_dat_1) <- c("name", "position", "nordic_force") 
+
+# Create plot
+g_1 <- ggplot(plot_dat_1, # Set dataset
+              aes(x = name, y = nordic_force, color = position)) + # Set aesthetics
+  geom_point(size = 4) + # Set geom point for scatter plot
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+         axis.text.x = element_text(angle = 90), # Rotate x-axis labels
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Athlete", y = "Nordic Force", color = "Position", # Set labels
+     title = "Player - Nordic Force Simulation Baselines") 
+# Generate plot
+g_1
+```
+
+
+#### Relative Workload
+
+We also would like to build in the effect of relative workload for each of the players. Let's break this into four conditions:
+
+```{r}
+# Create empty conditions
+condition_1 <- condition_2 <- condition_3 <- condition_4 <- rep(FALSE, nrow(admin_dat))
+```
+
+If a players short term increase in work is higher than his long term increase this will likely lead to a fall in strength due to fatigue. So we will define this condition as:
+
+* 1.2 < Total Distance A:C 28:56
+
+```{r}
+# Create condition 1
+condition_1[which((1.2 < met_dat$total_distance_ac_28_56))] <- TRUE
+```
+
+If a player is just returning to play and has recently been engaged in a low level of physical activity then it is likely that there will be a fall in strength. So we can define this condition as:
+
+* Total Distance A:C 7:21 < Mean(Total Distance A:C 7:21) & Total Distance Sum 7 < Mean(Total Distance Sum 7)
+
+```{r}
+# Create condition 2
+condition_2[which(dev_base_db$total_distance_ac_7_21 < 1 & dev_base_db$total_distance_sum_7_days < 1)] <- TRUE
+```
+
+If a player is getting into a performance ready state then it is likely that their strength is increasing, so we can define this third condition as:
+
+* Total Distance A:C 7:21 > Mean(Total Distance A:C 7:21)
+
+```{r}
+# Create conditon 3
+condition_3[which(dev_base_db$total_distance_ac_7_21 > 1)] <- TRUE
+```
+
+If a player is just returning from the off-season then it is likely that they will have less strength than usual. Due to the way the AC values are calculated it is likely that they will have NA's for these values and therefore conditions 1,2, and 3 will be false. We can therefore set condition 4 as:
+
+```{r}
+# Create condition 4
+condition_4[which(!(condition_1) & !(condition_2) & !(condition_3))] <- TRUE
+```
+
+Let's view a summary of how many fall into each condition:
+
+```{r}
+summary(condition_1) # View condition 1
+summary(condition_2) # View condition 2
+summary(condition_3) # View condition 3
+summary(condition_4) # View condition 4
+```
+
+We have a good balance of all four in our dataset
+
+We can then set the level of each of these effects as follows:
+
+```{r}
+# Create adjustment
+adjustment_1 <- (condition_1 * - 5) + # Include condition 1 effect
+                (condition_2 * -2.5) + # Include condition 2 effect
+                (condition_3 * 2.5) + # Include condition 3 effect
+                (condition_4 * -5) # Include condition 4 effect
+
+# View adjustment 1
+summary(adjustment_1)
+```
+
+### Stage of season
+
+The stage of the season is also likely to have an effect on the strength measures of the athletes we are interested in looking at:
+
+* Pre-season - Decrease in strength
+* Early-season - Average strength
+* Mid-season - Average/slight increase in strength
+* Late season - Decrease in strength
+
+We can control for this as:
+
+```{r}
+# Create empty vector to store results
+adjustment_2 <- rep(0, nrow(admin_dat))
+
+# Create season part effects
+adjustment_2[admin_dat$season_part[i] %in% c("pre_season")] <- -25
+adjustment_2[admin_dat$season_part[i] %in% c("early_season")] <- 10
+adjustment_2[admin_dat$season_part[i] %in% c("mid_season")] <- 20
+adjustment_2[admin_dat$season_part[i] %in% c("late_season")] <- -25
+```
+
+
+#### Simulating values
+
+We are almost ready to simulate the values for Nordic strength. The last parameter we need to set is the noise parameter. This is used to determine the relative strength of the signal to noise ratio when creating the data. 
+
+As a starting point let's set it as half of the difference between the mean and first quartile:
+
+```{r}
+# Set noise value
+noise_val_nordic <- 25
+```
+
+We are now ready to simulate the data for this metric, for this we can simulate from the normal distribution
+
+```{r}
+# Create empty vector to store results
+nordic_force_vals <- rep(NA, nrow(met_dat))
+# Set seed as we are generating random values
+set.seed(123456)
+# For each player
+for(i in 1:length(athletes)){
+  # Create index as rows corresponding to that player
+  index <- which(admin_dat$players == athletes[i])
+  
+  # Generate nordic force values for that player from the normal distribution
+  nordic_force_vals[index] <- rnorm(n = length(index), # Generate number of observations as player apperances
+                                    mean = (nordic_force_mean_val[index]) + # Set mean as player mean value
+                                      adjustment_1[index] + # Add adjustment 1
+                                      adjustment_2[index],  # Add adjustment 2
+                                    sd = noise_val_nordic) # Set standard deviation as noise value
+}
+
+summary(nordic_force_vals) # Summarise result
+```
+
+We can see that this falls into the previously specified range of values for the metric so we are likely okay to proceed. 
+
+Let's take a look at what our simulated data looks like over time. First we want to join the simulated values with each player and day:
+
+```{r}
+# Join simulated values with days and players columns
+plot_dat_2 <- cbind.data.frame(admin_dat[, c("players", "days")], nordic_force_vals)
+```
+
+Now we can plot the metric for some players:
+
+```{r}
+# Create plot
+g_2 <- ggplot(plot_dat_2[plot_dat_2$players %in% c("Kevin De Bruyne",
+                                               "David Silva",
+                                               "Claudio Bravo"),], # Set dataset
+              aes(x = days, y = nordic_force_vals, color = players)) + # Set aesthetics
+  geom_point() + # Add geom point for scatter plot
+  geom_smooth() + # Add smothing line
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Days", y = "Nordic Force", # Set labels
+     title = "Nordic Force Over Season") 
+# Generate Plot
+g_2
+```
+
+We can see the variation is rather extreme for this plot. Let's view the distribution for each player:
+
+```{r}
+# Create plot
+g_3 <- ggplot(plot_dat_2, # Set dataset
+              aes(x = players, y = nordic_force_vals, color = players)) + # Set aesthetics
+  geom_boxplot() + # Set boxplot
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+         axis.text.x = element_text(angle = 90), # Rotate x-axis labels
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Players", y = "Nordic Force", # Set labels
+     title = "Nordic Force") +
+  guides(color = FALSE) # Turn off color legend
+# Generate Plot
+g_3
+```
+
+Here we can see the Nordic force distribution has a very strong overlap for almost all players due to the noise level. Let's try reducing the noise and re-generating the plots:
+
+```{r}
+# Set noise value:
+noise_val_nordic <- 5
+# Create empty vector to store results
+nordic_force_vals <- rep(NA, nrow(met_dat))
+# Set seed as we are generating random values
+set.seed(123456)
+# For each player
+for(i in 1:length(athletes)){
+  # Create index as rows corresponding to that player
+  index <- which(admin_dat$players == athletes[i])
+  
+  # Generate nordic force values for that player from the normal distribution
+  nordic_force_vals[index] <- rnorm(n = length(index), # Generate number of observations as player apperances
+                                    mean = (nordic_force_mean_val[index]) + # Set mean as player mean value
+                                      adjustment_1[index] + # Add adjustment 1
+                                      adjustment_2[index],  # Add adjustment 2
+                                    sd = noise_val_nordic) # Set standard deviation as noise value
+}
+
+```
+
+```{r}
+# Create plot data
+plot_dat_3 <- cbind.data.frame(admin_dat[, c("players", "days")], nordic_force_vals)
+
+# Create plot
+g_4 <- ggplot(plot_dat_3[plot_dat_3$players %in% c("Kevin De Bruyne",
+                                               "David Silva",
+                                               "Claudio Bravo"),], # Set data
+              aes(x = days, y = nordic_force_vals, color = players)) + # Set aesthetics
+  geom_point() + # Set geom point for scatter plot
+  geom_smooth() + # Add smoothing line
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Days", y = "Nordic Force", # Set labels
+     title = "Nordic Force Over Season") 
+# Generate Plot
+g_4
+```
+
+And let's look at the distribution for each player:
+```{r}
+# Create plot
+g_5 <- ggplot(plot_dat_3, # Set dataset
+              aes(x = players, y = nordic_force_vals, color = players)) + # Set aesthetics
+  geom_boxplot() + # Set boxplot
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+         axis.text.x = element_text(angle = 90), # Rotate x-axis labels
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Players", y = "Nordic Force", # Set labels
+     title = "Nordic Force") +
+  guides(color = FALSE) # Turn off color legend
+# Generate Plot
+g_5
+```
+
+
+Now our separation is much clearer between players, so let's go with the lower noise level for now. 
+
+## Simulating Take-off Power
+
+The next metric we want to simulate is take-off power. For this, the following factors likely play a role:
+
+* Athlete speed and strength
+* Weight
+* Physical readiness/recent activity
+* Phase of the season
+
+These are similar to what we used for hamstring strength so we can reuse some of our previous calculations. We do however, need to modify our initial baseline using player weight. Let's create this as deviation from the 80th percentile of squad weight:
+
+```{r}
+# Baseline_2 - Weight
+baseline_w <- players$Weight/quantile(players$Weight, 0.8)
+```
+
+We can then modify our initial baseline as follows:
+
+```{r}
+# Create baseline 2 as baseline speed and strength * baseline w
+baseline_2 <- baseline_1 * baseline_w
+# View summary of baseline_2
+summary(baseline_2)
+```
+
+We see here that the baseline values fall between 50% and 92% which should give us a nice range for our simulation.
+
+
+We know the take-off power falls on a distribution of:
+
+* Minimum 39
+* 1st quartile 48
+* Mean 53
+* 3rd quartile 57
+* max 70
+
+
+Let's assign some base levels for each player:
+```{r}
+# Create a vector to store results
+take_off_mean_val <- rep(NA, nrow(admin_dat))
+take_off_base <- rep(NA, nrow(players))
+# Create a vector with values close to the inter-quartile range of take-off power
+take_off_vec <- rep(45:57)
+# For each row in our data
+for(i in 1:length(athletes)){
+  
+  take_off_base[i]  <- quantile(take_off_vec, probs = baseline_1[i])
+  # Calculate take-off power quantile for each player
+  take_off_mean_val[admin_dat$players == athletes[i]] <- rep(take_off_base[i],
+                                                             sum(admin_dat$players == athletes[i])) # Repeat as many times as athelete appears in data
+
+}
+# Print out values
+summary(take_off_vec)
+
+```
+
+Let's visualize the take-off values per player for a sense check:
+
+
+```{r}
+# Create plot data
+plot_dat_4 <- cbind.data.frame(players[, c("Player Name", "Position")], take_off_base)
+# Set plot data names
+names(plot_dat_4) <- c("name", "position", "take_off_power")
+
+g_6 <- ggplot(plot_dat_4, # Set dataset for aesthetics
+              aes(x = name, y = take_off_power, color = position)) +
+  geom_point(size = 4) + # Use geom point for scatter plot
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+         axis.text.x = element_text(angle = 90), # Rotate x-axis labels
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Athlete", y = "Take Off Power", color = "Position", # Set labels
+     title = "Player - Take Off Power Simulation Baselines") 
+# Generate plot
+g_6
+```
+
+Next let's create some adjustment values based on the physical status/recent workload, we will go with the same settings which we used previously, while changing the affect size to handle the reduced range of the metric:
+
+```{r}
+# Create adjustment 1
+adjustment_1 <- (condition_1 * -4) + # Add condition 1
+                (condition_2 * - 2) + # Add condition 2
+                (condition_3 * 2) + # Add condition 3
+                (condition_4 * - 4) # Add condition 4
+
+# Summarise adjustment 1
+summary(adjustment_1)
+```
+
+Next let's add in the effect of the part of the season the measurements are taken from:
+```{r}
+# Create empty vectors for results
+adjustment_2 <- rep(0, nrow(admin_dat))
+# Set early season or pre-season
+adjustment_2[admin_dat$season_part[i] %in% c("early_season", "pre_season")] <- -4
+# Set mid season
+adjustment_2[admin_dat$season_part[i] %in% c("mid_season")] <- 2
+# Set late season
+adjustment_2[admin_dat$season_part[i] %in% c("late_season")] <- -2
+```
+
+Next let's set the noise value for this:
+
+```{r}
+# Add noise
+noise_val <- 1.5
+```
+
+Now we are ready to simulate the take-off values for each athlete on each day:
+```{r}
+# Create vector to store results
+take_off_vals <- rep(NA, nrow(admin_dat))
+
+# Set seed as generating random values
+set.seed(123456)
+# For each athlete
+for(i in 1:length(athletes)){
+  
+  # Create index as rows corresponding to that player
+  index <- which(admin_dat$players == athletes[i])
+  # Simulate take-off values from the normal distribution
+  take_off_vals[index] <- rnorm(n = length(index), # Set number of values to generate as athlete days
+                                 mean = (take_off_mean_val[index] + # Set mean value as set value
+                                         adjustment_1[index] +  # Add adjustment for recent workload
+                                         adjustment_2[index]),  # Add adjustment for part of the season
+                                         sd = noise_val) # Set noise value
+}
+# View summary of simulated values
+summary(take_off_vals)
+```
+
+This looks like quite a reasonable range, let's visualize what it looks like on a player level:
+
+```{r}
+# Create plot data
+plot_dat_5 <- cbind.data.frame(admin_dat[, c("players", "days")], take_off_vals)
+
+# Create plot
+g_7 <- ggplot(plot_dat_5[plot_dat_5$players %in% c("Kevin De Bruyne",
+                                               "David Silva",
+                                               "Claudio Bravo"),], # Set dataset to use
+              aes(x = days, y = take_off_vals, color = players)) + # Set aesthetics
+  geom_point() + # Set geom point for scatter plot
+  geom_smooth() + # Add smoothing line
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Days", y = "Take Off Power", # Set labels
+     title = "Take Off Power Over Season") 
+# Generate Plot
+g_7
+```
+
+This does look slightly noisy but let's visualize the squad levels to see how it is doing:
+
+```{r}
+# Create plot
+g_8 <- ggplot(plot_dat_5, # Set dataset
+              aes(x = players, y = take_off_vals, color = players)) + # Set aesthetics
+  geom_boxplot() + # Set box plot
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+         axis.text.x = element_text(angle = 90), # Rotate x-axis labels
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Players", y = "Take Off Power", # Set labels
+     title = "Take Off Power") +
+  guides(color = FALSE) # Turn off color legend
+# Generate Plot
+g_8
+```
+
+While there is less separation than for the Nordic force we can likely work with this. 
+
+## Simulate Imbalance
+
+One of the riskier aspects of the measurements is likely when a player has a strong imbalance. We will simulate this for the Nordic force value that we have previously measured. The distribution of imbalance for the Nordic force can be described as:
+
+* Minimum: 0
+* 1st quartile: 3
+* Mean: 7
+* 3rd quartile: 12
+* Maximum: 25
+
+Let's simulate some base imbalance values:
+
+```{r}
+# Set seeds as using random numbers
+set.seed(123456)
+# Simulate imbalance from uniform distribution
+imbalance_vec <- runif(length(athletes), # Set number of values to generate
+                       min = 0, # Set minimum value
+                       max = 8) # Set maximum value
+
+# Summarize imbalance vec
+summary(imbalance_vec)
+```
+
+While we likely have some similar causal factors for imbalance data that we do for the Nordic force and take-off-power it is more likely that instead of speed and strength a players height and weight will have a greater effect. Let's calculate this as follows:
+
+```{r}
+# Calculate baseline height effect as height divided by 80th percentile of squad average
+baseline_h <- players$Height/quantile(players$Height, 0.8)
+# Calculate combined height and weigt baseline value
+baseline_hw <- baseline_h * baseline_w
+# View summary of height/weight baseline
+summary(baseline_hw)
+```
+
+Let's add our other adjustments as before:
+
+```{r}
+# Calculate adjustments for physical status
+adjustment_1 <- (condition_1 * 2) + # Add condition 1
+                (condition_2 * 1) + # Add condition 2
+                (condition_3 * -1) + # Add condition 3
+                (condition_4 * 2) # Add condition 4
+# View summary 
+summary(adjustment_1)
+```
+
+
+```{r}
+
+# Calculate adjusments for part of season
+# Create empty adjustment vectors
+adjustment_2 <- rep(0, nrow(admin_dat))
+# If pre-season or early season
+adjustment_2[admin_dat$season_part[i] %in% c("early_season", "pre_season")] <- 1
+# If mid-season
+adjustment_2[admin_dat$season_part[i] %in% c("mid_season")] <- -1
+# If late season
+adjustment_2[admin_dat$season_part[i] %in% c("late_season")] <- 1
+```
+
+We are now ready to simulate player imbalance for these muscle groups. As this cannot be a negative value we will instead use the negative binomial distribution to simulate the values.
+
+```{r}
+# Set noise value
+noise_val <- 1
+# Create empty vector to store results
+imbalance_vals <- rep(NA,nrow(admin_dat))
+# Set seed as simulating random values
+set.seed(123456)
+
+# For each athlete
+for(i in 1:length(athletes)){
+  
+  # Create index as rows corresponding to that player
+  index <- which(admin_dat$players == athletes[i])
+  # Simulate imbalance from negative binomial distribution
+  imbalance_vals[index] <- rnbinom(length(index), # Set number of values to generate
+                                   mu = (imbalance_vec[i] * baseline_hw[i]) + # Set mean value as simulated baseline * HW
+                                        adjustment_1[index] + # Add adjustment 1 
+                                        adjustment_2[index],  # Add adjustment 2
+                                   size = noise_val) # Set size as noise value
+}
+
+# View simulated imbalance values
+summary(imbalance_vals)
+```
+
+This looks generally okay but there are some extreme outliers, let's view a density plot to see what the distribution looks like:
+
+```{r}
+# Create plot data
+plot_dat_6 <- cbind.data.frame(admin_dat[, c("players", "days")], imbalance_vals)
+
+# Create plot
+g_9 <- ggplot(plot_dat_6, # Set dataset
+              aes(x = imbalance_vals)) + # Set x axis
+  geom_density(alpha = 0.5, fill = "blue") + # Set density plot
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Imbalance",  # Set labels
+     title = "Simulated Imbalance Values")
+# Generate plot
+g_9
+```
+
+It does look like we have some extreme values in the tails, let's view these on a per player basis:
+
+```{r}
+# Create plot
+g_10 <- ggplot(plot_dat_6, # Set dataset
+               aes(x = imbalance_vals, y = players, fill = players)) + # Set aesthetics
+  geom_density_ridges(alpha = 0.5) + # Use geom density ridges for 3d density
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Imbalance", y = "Players",  # Set labels
+     title = "Simulated Imbalance Values") +
+  guides(fill = FALSE) # Turn off legend for fill
+# Generate plot
+g_10
+```
+
+
+There a few extreme values so lets censor it at 40. We can include these to be an example of the noise generated from these measurements:
+
+```{r}
+# Set all values above 40 to 40
+imbalance_vals[imbalance_vals > 40] <- 40
+```
+
+
+## Calculate deviation
+
+Now that we have simulated some data let's join it all together:
+
+```{r}
+# Join simulated columns together
+measure_data <- cbind.data.frame(nordic_force_vals, imbalance_vals,
+                                       take_off_vals)
+# Add names to measure data
+names(measure_data) <- c("nordic_strength_avg", "nordic_imbalance",
+                               "take_off_strength")
+```
+
+Since it is likely that there is an increased in a decrease in strength on a player level, we should also calculate the deviation from average for each player. Let's use some of our previously created functions:
+
+```{r}
+# Define moving average days function
+m_dev_days <- function(gps_data, admin_dat, met, days_1, days_2){
+  #'
+  #' This function calculates the moving average of a given metric over a 
+  #' period of time.
+  #'
+  #' @param gps_data Data frame of metrics over a given period
+  #' @param admin_data Data frame of adminstration variables, with 
+  #' columns of players, indicating player id, and days, indicating the
+  #' day each metric was measured on
+  #' @param met The metric to calculate the moving for
+  #' @param days The window of exposures to calculate the moving average for
+  #' 
+  #' @return A vector containing the moving average value of the variable over
+  #' the previous days period for each row.
+  #'
+  #' @examples
+  #' g_data <- data.frame(distance = c(1,2,3,4))
+  #' a_data <- data.frame(players = c(1,1,1,1),
+  #'                          days = c(1,2,3,4))
+  #' m_dev_res <- m_dev_days(gps_data = g_data,
+  #'                     admin_dat = a_data,
+  #'                     met = "distance",
+  #'                     days_1 = 2,
+  #'                     days_2 = 3)
+  #'
+  
+  # Create empty vector to store results
+  mdev_vec <- rep(NA, nrow(gps_data))
+  # For each row of results data frame
+  for(i in 1:nrow(gps_data)){
+ # Extract previous data which falls in given window, for given metric
+    temp_vec_1 <- gps_data[which(admin_dat$players == admin_dat$players[i] &
+                               admin_dat$days < admin_dat$days[i] &
+                               admin_dat$days >= (admin_dat$days[i] - days_1)),c(met)]
+     # Extract previous data which falls in given window, for given metric
+    temp_vec_2 <- gps_data[which(admin_dat$players == admin_dat$players[i] &
+                               admin_dat$days < admin_dat$days[i] &
+                               admin_dat$days >= (admin_dat$days[i] - days_2)),c(met)]
+
+    # If the length of both vectors is at least 1
+    if(length(temp_vec_1) >= 1 &
+       length(temp_vec_2) >= 1){
+      # Calculate mean of the values and assign to result vector
+      mdev_vec[i] <- mean(temp_vec_1, na.rm = T)/mean(temp_vec_2, na.rm = T)
+    }
+  }
+  # Return result vector
+  return(mdev_vec)
+}
+```
+
+We can use this to calculate the deviation on a 28:56 basis for each player:
+
+```{r}
+# Calculate deviation from month to month for Nordic
+mdev_nordic_28_56 <- m_dev_days(gps_data = measure_data,
+                                   admin_dat, met = "nordic_strength_avg", days_1 = 28, days_2 = 56) 
+# Calculate deviation from month to month for take_off_strength
+mdev_take_off_28_56 <- m_dev_days(gps_data = measure_data,
+                                   admin_dat, met = "take_off_strength", days_1 = 28, days_2 = 56) 
+```
+
+Let's add these to our calculated variables:
+
+```{r}
+# Add variables to dataset
+measure_data$nordic_deviation <- mdev_nordic_28_56
+measure_data$take_off_deviation <- mdev_take_off_28_56
+```
+
+
+## Calculate Injury Risk
+
+Now that we have simulated our measurement values, let's use these values and the GPS values to generate some injury risk factors based on the model we previously sketched out:
+
+* Long-term fatigue: Total Distance A:C 28:56 > 1.15
+* Short-term fatigue: Total Distance A:C 7:21 > 1.15
+* Long-term speed: HSR A:C 28:56 > 1.15
+* Short-term speed: HSR A:C 7:21 > 1.15
+* Imbalance: Nordic Imbalance > 11
+* Weakness All: Take off Power < Mean(Take Off Power) & Nordic Force < Mean(Nordic Force)
+* Weakness 1: Take off Power < Mean(Take Off Power) | Nordic Force < Mean(Nordic Force)
+* Decline: Nordic Deviation < 98 | Take Off Deviation < 98
+
+We can generate these values as follows:
+
+
+```{r}
+# Create long term fatigue
+long_fatigue <- met_dat$total_distance_ac_28_56 > 1.15
+# Create short term fatigue
+short_fatigue <- met_dat$total_distance_ac_7_21 > 1.15
+# Create long term speed
+speed_drain_long <- met_dat$HSR_ac_28_56 > 1.15
+# Create short term speed
+speed_drain_short <- met_dat$HSR_ac_7_21 > 1.15
+# Create imbalance
+imbalance <- measure_data$nordic_imbalance > 11
+# Create weakness all
+weakness_all <- (measure_data$nordic_strength_avg < mean(measure_data$nordic_strength_avg)) &
+  (measure_data$take_off_strength < mean(measure_data$take_off_strength))
+# Create weakness 1
+weakness_1 <- (measure_data$nordic_strength_avg < mean(measure_data$nordic_strength_avg)) |
+  (measure_data$take_off_strength < mean(measure_data$take_off_strength))
+# Create decline
+decline <- (measure_data$nordic_deviation < 98) | (measure_data$take_off_deviation < 98)
+# Join risk factors together
+risk_factors <- cbind.data.frame(long_fatigue, short_fatigue, speed_drain_short, speed_drain_long,
+                                 imbalance, weakness_all, weakness_1, decline)
+# Summarize risk factors
+summary(risk_factors)
+```
+
+Here we have missing values for 40 observations, let set these to false to avoid dropping the rows just yet:
+
+```{r}
+# Set missing risk factors to false
+risk_factors[is.na(risk_factors)] <- FALSE
+```
+
+Let's convert the sum of the risk factors into injury risk:
+
+```{r}
+# Calculate injury risk
+injury_risk <- rowSums(risk_factors)
+```
+
+Let's view the distribution of injury for the team:
+
+```{r}
+# Create plot data
+plot_dat_7 <- cbind.data.frame(admin_dat[, c("players", "days")], injury_risk)
+
+# Create plot
+g_11 <- ggplot(plot_dat_7, aes(x = injury_risk)) + # Set data and x axis
+  geom_histogram(alpha = 0.5, fill = "blue") + # Set geom histogram
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Injury Risk",  # Set labels
+     title = "Simulated Injury Risk")
+# Generate plot
+g_11
+```
+
+This is a very simplified version of the injury risk distribution which we visualized in our mental model of the relationships. 
+
+## Simulate Injury
+
+We are now ready to simulate injury for this data. How we calculate the injuries here will determine the difficulty in detecting them. We can do this in a couple of ways:
+
+(1) - Almost all high risk players get injured
+
+This will result in moderate difficulty due to sparsity but an algorithm should be able to figure it out. 
+
+To accomplish this we can simulate values from a uniform distribution of 4-8 and set players with an injury risk above the simulated value as injured:
+
+```{r}
+# Set seed as generating random values
+set.seed(123456)
+# Simulate injury event
+inj_event_1 <- runif(length(injury_risk),min = 4, max = 8)
+# Identify injuries
+injuries_1 <- as.numeric(inj_event_1 < injury_risk)
+```
+
+Let's visualize the distribution of injuries compared to the risk factors:
+
+```{r}
+# Create plot data
+plot_dat_8 <- cbind.data.frame(admin_dat[, c("players", "days")], injury_risk, injuries_1)
+# Create plot
+g_12 <- ggplot(plot_dat_8, # Set dataset
+               aes(x = injury_risk, fill = factor(injuries_1))) + # Set x and fill
+  geom_histogram(alpha = 0.5, position = "dodge") + # Set histogram
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Injury Risk", fill = "Injured", # Set labels
+     title = "Simulated Injury Risk") +
+  scale_fill_manual(values= c("1" = "red", "0" = "blue"), # Set colors manually
+                     labels = c("1" = "Injured", "0" = "Healthy"))
+# Generate plot
+g_12
+```
+
+Here we see that there are very few injuries in the dataset, however all level 8 risk factor players suffer an injury, most of the level 7 risk factor players suffer an injury and slightly about half of the level 6 risk factor players along with a couple of the level 5. 
+
+(2) - High variance in injuries
+
+By increasing the range of values which we simulate from we increase the possibility of drawing values from the uniform distribution that are above the level of the risk factors indicating there was no chance of them being injured from the event that day. 
+
+This will likely be more difficult to detect as there is now more randomness in the data.
+
+```{r}
+# Set seed as generating random values
+set.seed(123456)
+# Simulate injury event
+inj_event_2 <- runif(length(injury_risk),min = 3, max = 11)
+# Identify injuries
+injuries_2 <- as.numeric(inj_event_2 < injury_risk)
+```
+
+Let's visualize the distribution of injuries here:
+
+```{r}
+# Create plot data
+plot_dat_9 <- cbind.data.frame(admin_dat[, c("players", "days")], injury_risk, injuries_2)
+
+# Create plot
+g_13 <- ggplot(plot_dat_9, # Set dataset
+               aes(x = injury_risk, fill = factor(injuries_2))) + # Set x and fill
+  geom_histogram(alpha = 0.5, position = "dodge") + # Set histogram
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Injury Risk", fill = "Injured", # Set labels
+     title = "Simulated Injury Risk") +
+  scale_fill_manual(values= c("1" = "red", "0" = "blue"), # Set colors manually
+                     labels = c("1" = "Injured", "0" = "Healthy"))
+# Generate  plot
+g_13
+```
+
+We can see that a small quantity of level 4 risk players now get injured, about 1/3 of the level 5 risk players and less than half of the level 6 risk players, more than half of the level 7 risk players and almost all level 8. 
+
+
+(3) - Moderate to high risk players get injured (low variance)
+
+Here we drop the lower value of the uniform distribution which should result in more injuries being generated overall. 
+
+```{r}
+# Set seed as generating random values
+set.seed(123456)
+# Simulate injury event
+inj_event_3 <- runif(length(injury_risk),min = 2, max = 8)
+# Identify injuries
+injuries_3 <- as.numeric(inj_event_3 < injury_risk)
+```
+
+Let's view the distribution of the injuries:
+
+```{r}
+# Create plot data
+plot_dat_10 <- cbind.data.frame(admin_dat[, c("players", "days")], injury_risk, injuries_3)
+
+# Create plot
+g_14 <- ggplot(plot_dat_10, # Set data to use
+               aes(x = injury_risk, fill = factor(injuries_3))) + # Set x and fill
+  geom_histogram(alpha = 0.5, position = "dodge") + # Set geom histogram
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Injury Risk", fill = "Injured", # Set labels
+     title = "Simulated Injury Risk") +
+  scale_fill_manual(values= c("1" = "red", "0" = "blue"), # Set colors manually
+                     labels = c("1" = "Injured", "0" = "Healthy"))
+# Generate plot
+g_14
+```
+
+Here we see that a small proportion of the level 3 players get injured, slightly greater than 1/3 of the level 4 players, slightly less than half of the level 5, about 2/3rds of the level 6 and almost all of the level 7. This variation makes it challenging for a model to capture since there is quite a lot of randomness present and we can expect a lot of false positives. 
+
+(4) - Moderate to high risk players get injured (high variance)
+
+Let's increase the upper bound of the uniform distribution we are simulating from to increase the variance of the injuries:
+
+```{r}
+# Set seed as generating random values
+set.seed(123456)
+# Simulate injury event
+inj_event_4 <- runif(length(injury_risk),min = 2, max = 11)
+# Identify injuries
+injuries_4 <- as.numeric(inj_event_4 < injury_risk)
+```
+
+Let's plot the distribution of the injuries:
+
+```{r}
+# Create plot data
+plot_dat_11 <- cbind.data.frame(admin_dat[, c("players", "days")], injury_risk, injuries_4)
+
+# Create plot
+g_15 <- ggplot(plot_dat_11, # Set dataset
+               aes(x = injury_risk, fill = factor(injuries_4))) + # x and fill
+  geom_histogram(alpha = 0.5, position = "dodge") + # Use geom histogram
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Injury Risk", fill = "Injured", # Set labels
+     title = "Simulated Injury Risk") +
+  scale_fill_manual(values= c("1" = "red", "0" = "blue"), # Scale colors manually
+                     labels = c("1" = "Injured", "0" = "Healthy"))
+# Generate plot
+g_15
+```
+
+Here we see that a very small proportion of the level 3 and level 4 players get injured, less than half of the level 5 and about half of the level 6 and level 7. 
+
+Let's save this data for future use:
+
+```{r}
+# Join injuries into data.frame
+injuries <- cbind.data.frame(injuries_1, injuries_2, injuries_3, injuries_4)
+# Save data
+save(met_dat, admin_dat, players, measure_data, injuries, file = "gps_measure_injuries.rda")
+```
+
+
+## Exercsises: 
+
+* Simulate the drop jump height for the players. 
+* Visualize it at two different noise levels to see the effect.
+
+The distribution of drop jump height values is:
+
+# Minimum: 22
+# 1st quartile: 33
+# Mean: 38 
+# 3rd quartile: 42
+# Maximum: 53
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

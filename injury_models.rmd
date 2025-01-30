@@ -1,0 +1,799 @@
+ ---
+title: "Injury Analytics"
+author: "Human Performance Analytics"
+date: "21 March 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+For this analysis we will be using the data we previously simulated to detected injuries in the data. Let's load the packages we will need for this analysis. 
+
+```{r}
+library(xgboost) # Load XGBoost
+library(caret) # Load Caret
+library(ggplot2) # Load ggplot2
+library(pROC) # Load ROC plot
+library(ggrepel) # Load ggrepel
+library(ggdark) # Load ggdark
+```
+
+and load the data:
+
+```{r}
+# Load data from last class
+load("gps_measure_injuries.rda")
+```
+
+## Injury Models
+
+Let's run some models on this data and see how we get on.
+
+
+We can use the first season as training data and the second season as test data:
+
+```{r}
+# Create explantory variables datasets
+train_dat <- cbind.data.frame(met_dat[admin_dat$days < 320,], measure_data[admin_dat$days < 320,])
+test_dat <- cbind.data.frame(met_dat[admin_dat$days >= 320,], measure_data[admin_dat$days >= 320,])
+
+# Create response variable datasets
+train_resps <- injuries[admin_dat$days < 320,]
+test_resps <- injuries[admin_dat$days >= 320,]
+```
+
+Let's view our training data:
+
+```{r}
+summary(train_dat)
+```
+
+Our models do not like missing values so lets identify rows with missing values, as we want to remove them from both the explantory data and the response:
+
+```{r}
+# Identify rows with missing values in training data
+rem_index_train <- which(rowSums(is.na(train_dat)) > 0)
+# Identify rows with missing values in test data
+rem_index_test <- which(rowSums(is.na(test_dat)) > 0)
+```
+
+Lets then remove these rows from our datasets:
+
+```{r}
+# Create explantory variables datasets
+train_dat <- train_dat[-rem_index_train,]
+test_dat <- test_dat[-rem_index_test,]
+
+# Create response variable datasets
+train_resps <- train_resps[-rem_index_train,]
+test_resps <- test_resps[-rem_index_test,]
+```
+
+## Model Building 
+
+We are now ready to apply some models.
+
+### Case 1 - Almost all high risk players get injured
+
+For this first case we will consider the setting where almost all of the high risk players get injured. Let's view the distribution of injury vs Injury risk first to view the difficulty of the challenge:
+
+```{r}
+# Create plot
+i1 <- ggplot(injuries, # Set dataset
+               aes(x = injury_risk, fill = factor(injuries_1))) + # Set x and fill
+  geom_histogram(alpha = 0.5, position = "dodge") + # Set histogram
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Injury Risk", fill = "Injured", # Set labels
+     title = "Simulated Injury Risk") +
+  scale_fill_manual(values= c("1" = "red", "0" = "blue"), # Set colors manually
+                     labels = c("1" = "Injured", "0" = "Healthy")) +
+  scale_x_continuous(breaks=seq(0, 8, 1)) 
+# Generate plot
+i1
+```
+
+Here we a steadily increasing proportion of injuries as the injury risk increases. 
+
+Let's next create the xgb.DMatrix objects for XGBoost:
+
+```{r}
+# Create training and test data
+dtrain_1 <- xgb.DMatrix(data = as.matrix(train_dat), label = train_resps$injuries_1)
+dtest_1 <- xgb.DMatrix(data = as.matrix(test_dat), label = test_resps$injuries_1)
+```
+
+For our first attempt we will just try a model with default parameters:
+
+```{r}
+fit_1 <- xgboost(dtrain_1,  # Set dataset to use
+                 nrounds = 100, # Set number of rounds
+               
+               verbose = 1, # 1 - Prints out fit
+                print_every_n = 20, # Prints out result every 20th iteration
+               
+               objective = "binary:logistic", # Set objective
+               eval_metric = "auc",
+               eval_metric = "error")
+```
+
+Let's view the accuracy of this model on test data:
+
+```{r}
+boost_preds_1 <- predict(fit_1, dtest_1) # Create predictions for xgboost model
+
+# Convert predictions to classes, using optimal cut-off
+boost_pred_class <- rep(0, length(boost_preds_1))
+boost_pred_class[boost_preds_1 >= 0.5] <- 1
+
+
+t <- table(boost_pred_class, test_resps$injuries_1) # Create table
+confusionMatrix(t, positive = "1") # Produce confusion matrix
+```
+
+Here while our accuracy appears high at 96.37%, the results are being dominated by the majority class of non-injured samples. The balanced accuracy and sensitivity are much more useful metrics here and at 0.63 and 0.27 respectively they could use some work. A quick way to get some better results would be to drop the cut-off value, let's set it as the proportion of injured samples in the dataset:
+
+```{r}
+## Create cut-off as proportion of samples of minority class
+cut_off <- sum(train_resps$injuries_1 == 1)/nrow(train_resps)
+
+boost_preds_1 <- predict(fit_1, dtest_1) # Create predictions for xgboost model
+
+# Convert predictions to classes, using optimal cut-off
+boost_pred_class <- rep(0, length(boost_preds_1))
+boost_pred_class[boost_preds_1 >= cut_off] <- 1
+
+
+t <- table(boost_pred_class, test_resps$injuries_1) # Create table
+confusionMatrix(t, positive = "1") # Produce confusion matrix
+```
+
+Now we have a balanced accuracy of 82.3% which is a lot better. Our sensitivity is now at 68.2% which is a solid improvement. 
+
+To try squeeze some simple improvements lets use the weighting feature of XGBoost.The model also appeared to converge very quickly so lets drop the learning rate from the default of 0.3 to 0.1. 
+
+```{r}
+# Create weight vector 
+weight_vec <- rep(1, nrow(train_resps))
+# Assign higher weight to injured samples
+weight_vec[train_resps$injuries_1 == 1] <- nrow(train_resps)/sum(train_resps$injuries_1 == 1)
+
+fit_1w <- xgboost(dtrain_1,  # Set dataset to use
+                 nrounds = 100, # Set number of rounds
+               eta = 0.1,
+               verbose = 1, # 1 - Prints out fit
+                print_every_n = 20, # Prints out result every 20th iteration
+               
+               objective = "binary:logistic", # Set objective
+               eval_metric = "auc",
+               eval_metric = "error",
+               
+               weight = weight_vec) # Set weight vector
+```
+
+```{r}
+boost_preds_1w <- predict(fit_1w, dtest_1) # Create predictions for xgboost model
+
+# Convert predictions to classes, using optimal cut-off
+boost_pred_class <- rep(0, length(boost_preds_1w))
+boost_pred_class[boost_preds_1w >= cut_off] <- 1
+
+
+t <- table(boost_pred_class, test_resps$injuries_1) # Create table
+confusionMatrix(t, positive = "1") # Produce confusion matrix
+```
+
+We now see we have a balanced accuracy of 91.6% and a sensitivity of 88.4%. This is not that bad for an injury model. Let's see what variables it is finding important. First we will load the SHAP importance functions:
+
+```{r}
+# Load SHAP functions
+source("a_insights_shap_functions.r")
+```
+
+Now we can create a SHAP importance plot for this model:
+
+```{r}
+# Calculate SHAP importance
+shap_result_1 <- shap.score.rank(xgb_model = fit_1w, 
+                X_train =as.matrix(train_dat),
+                shap_approx = F)
+# Calculate data for SHAP plot
+shap_long_1 = shap.prep(shap = shap_result_1,
+                           X_train = as.matrix(train_dat), 
+                           top_n = 10)
+
+# Generate SHAP plot
+plot.shap.summary(data_long = shap_long_1)
+```
+
+From this we see that the high speed running A:C ratio appears to be the key value with large increases month on month contributing significantly to injury and similarly for the week. Having high values of take-off strength and nordic strength as well as a low imbalance value appear to reduce the risk of injury. 
+
+This seems like reasonable performance for the difficulty of this response and we could use it to make a solid case for the adoption of such an approach. Let's test out some of our other simulated response variables to see how they perform. 
+
+## Case 2 - High variance in injuries
+
+Let's view the distribution of injuries vs injury risk for this response variable:
+
+```{r}
+# Create plot
+i2 <- ggplot(injuries, # Set dataset
+               aes(x = injury_risk, fill = factor(injuries_2))) + # Set x and fill
+  geom_histogram(alpha = 0.5, position = "dodge") + # Set histogram
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Injury Risk", fill = "Injured", # Set labels
+     title = "Simulated Injury Risk") +
+  scale_fill_manual(values= c("1" = "red", "0" = "blue"), # Set colors manually
+                     labels = c("1" = "Injured", "0" = "Healthy")) +
+  scale_x_continuous(breaks=seq(0, 8, 1)) 
+# Generate plot
+i2
+```
+
+Here we see some lower risk players getting injured and a smaller proportion of high risk players getting injured with some level 8 risk players managing to avoid injury. This will likely be a more challenging problem than the first. 
+
+
+For comparison purposes, we will try the un-weighted versions of the model first. 
+
+```{r}
+# Create training and test data
+dtrain_2 <- xgb.DMatrix(data = as.matrix(train_dat), label = train_resps$injuries_2)
+dtest_2 <- xgb.DMatrix(data = as.matrix(test_dat), label = test_resps$injuries_2)
+```
+
+For our first attempt we will just try a model with default parameters:
+
+```{r}
+fit_2 <- xgboost(dtrain_2,  # Set dataset to use
+                 nrounds = 100, # Set number of rounds
+               
+               verbose = 1, # 1 - Prints out fit
+                print_every_n = 20, # Prints out result every 20th iteration
+               
+               objective = "binary:logistic", # Set objective
+               eval_metric = "auc",
+               eval_metric = "error")
+```
+
+Let's view the accuracy of this model on test data:
+
+```{r}
+boost_preds_2 <- predict(fit_2, dtest_2) # Create predictions for xgboost model
+
+# Convert predictions to classes, using optimal cut-off
+boost_pred_class <- rep(0, length(boost_preds_2))
+boost_pred_class[boost_preds_2 >= 0.5] <- 1
+
+
+t <- table(boost_pred_class, test_resps$injuries_2) # Create table
+confusionMatrix(t, positive = "1") # Produce confusion matrix
+```
+
+Again, our accuracy appears high at 95.13% but our balanced accuracy of 52.8% and sensitivity of 0.062 tell a very different story. It does appear like this will be a more challenging setting as we had envisioned when setting up the scenario. 
+
+Let's drop the cut-off in a similar fashion to what we did above and see if we can improve the results:
+
+```{r}
+# Create cut-off as proportion of samples of minority class
+cut_off <- sum(train_resps$injuries_2 == 1)/nrow(train_resps)
+
+boost_preds_2 <- predict(fit_2, dtest_2) # Create predictions for xgboost model
+
+# Convert predictions to classes, using optimal cut-off
+boost_pred_class <- rep(0, length(boost_preds_2))
+boost_pred_class[boost_preds_2 >= cut_off] <- 1
+
+
+t <- table(boost_pred_class, test_resps$injuries_2) # Create table
+confusionMatrix(t, positive = "1") # Produce confusion matrix
+```
+
+Now we have a balanced accuracy of 69.5% which is a lot better. Our sensitivity is now at 44.6% which is a solid improvement but still reasonably poor performance. 
+
+Again let's try improve the results by using the weight feature and dropping the learning rate:
+
+```{r}
+# Create weight vector 
+weight_vec <- rep(1, nrow(train_resps))
+# Assign higher weight to injured samples
+weight_vec[train_resps$injuries_2 == 1] <- nrow(train_resps)/sum(train_resps$injuries_2 == 1)
+
+fit_2w <- xgboost(dtrain_2,  # Set dataset to use
+                 nrounds = 100, # Set number of rounds
+               eta = 0.1,
+               verbose = 1, # 1 - Prints out fit
+                print_every_n = 20, # Prints out result every 20th iteration
+               
+               objective = "binary:logistic", # Set objective
+               eval_metric = "auc",
+               eval_metric = "error",
+               
+               weight = weight_vec) # Set weight vector
+```
+
+```{r}
+boost_preds_2w <- predict(fit_2w, dtest_2) # Create predictions for xgboost model
+
+# Convert predictions to classes, using optimal cut-off
+boost_pred_class <- rep(0, length(boost_preds_2w))
+boost_pred_class[boost_preds_2w >= cut_off] <- 1
+
+
+t <- table(boost_pred_class, test_resps$injuries_2) # Create table
+confusionMatrix(t, positive = "1") # Produce confusion matrix
+```
+
+We now see we have a balanced accuracy of 78.9% and a sensitivity of 67.3%. This is not that bad for this dataset with a tough response variable. Let's see what variables it is finding important. 
+
+Now we can create a SHAP importance plot for this model:
+
+```{r}
+# Calculate SHAP importance
+shap_result_2 <- shap.score.rank(xgb_model = fit_2w, 
+                X_train =as.matrix(train_dat),
+                shap_approx = F)
+# Calculate data for SHAP plot
+shap_long_2 = shap.prep(shap = shap_result_2,
+                           X_train = as.matrix(train_dat), 
+                           top_n = 10)
+
+# Generate SHAP plot
+plot.shap.summary(data_long = shap_long_2)
+```
+
+For this we see that HSR A:C 28:56 is still the most important variable, while nordic force/imbalance have become the second/third most important metrics respectively.
+
+## Case 3 - Moderate to high risk players get injured (low variance)
+
+
+Again, let's view the distribution of injury risk and injury occurance:
+
+```{r}
+# Create plot
+i3 <- ggplot(injuries, # Set dataset
+               aes(x = injury_risk, fill = factor(injuries_3))) + # Set x and fill
+  geom_histogram(alpha = 0.5, position = "dodge") + # Set histogram
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Injury Risk", fill = "Injured", # Set labels
+     title = "Simulated Injury Risk") +
+  scale_fill_manual(values= c("1" = "red", "0" = "blue"), # Set colors manually
+                     labels = c("1" = "Injured", "0" = "Healthy")) +
+  scale_x_continuous(breaks=seq(0, 8, 1)) 
+# Generate plot
+i3
+```
+
+Here we see far more injuries in the team with some level 3 risk players even getting hurt. This proportion of injuries is likely unrealistic but should present a tough challenge for modelling. 
+
+
+```{r}
+# Create training and test data
+dtrain_3 <- xgb.DMatrix(data = as.matrix(train_dat), label = train_resps$injuries_3)
+dtest_3 <- xgb.DMatrix(data = as.matrix(test_dat), label = test_resps$injuries_3)
+```
+
+For our first attempt we will just try a model with default parameters:
+
+```{r}
+fit_3 <- xgboost(dtrain_3,  # Set dataset to use
+                 nrounds = 100, # Set number of rounds
+               
+               verbose = 1, # 1 - Prints out fit
+                print_every_n = 20, # Prints out result every 20th iteration
+               
+               objective = "binary:logistic", # Set objective
+               eval_metric = "auc",
+               eval_metric = "error")
+```
+
+Let's view the accuracy of this model on test data:
+
+```{r}
+boost_preds_3 <- predict(fit_3, dtest_3) # Create predictions for xgboost model
+
+# Convert predictions to classes, using optimal cut-off
+boost_pred_class <- rep(0, length(boost_preds_3))
+boost_pred_class[boost_preds_3 >= 0.5] <- 1
+
+
+t <- table(boost_pred_class, test_resps$injuries_3) # Create table
+confusionMatrix(t, positive = "1") # Produce confusion matrix
+```
+
+Here our balanced accuracy is at 60.2% with a sensitivity of 24.8%. Note that there are a lot more injuries in this situation than before. Let's try setting the cut-off as before:
+
+
+```{r}
+# Create cut-off as proportion of samples of minority class
+cut_off <- sum(train_resps$injuries_3 == 1)/nrow(train_resps)
+
+boost_preds_3 <- predict(fit_3, dtest_3) # Create predictions for xgboost model
+
+# Convert predictions to classes, using optimal cut-off
+boost_pred_class <- rep(0, length(boost_preds_3))
+boost_pred_class[boost_preds_3 >= cut_off] <- 1
+
+
+t <- table(boost_pred_class, test_resps$injuries_3) # Create table
+confusionMatrix(t, positive = "1") # Produce confusion matrix
+```
+
+Now we have a balanced accuracy of 67.2% which is a lot better. Our sensitivity is now at 48%. A considerable issue with this model is the number of false positives. If this model was implemented then we would be having to rest players on 521 days unneccesarily. This is not something a coach would be too pleased about, in particular it would likely lead to players being unavailable for games or becoming unfit due to lack of training. Players would also be displeased if foreced to sit unncessarily.
+
+Let's again try use the weight feature and drop the learning rate:
+
+```{r}
+# Create weight vector 
+weight_vec <- rep(1, nrow(train_resps))
+# Assign higher weight to injured samples
+weight_vec[train_resps$injuries_3 == 1] <- nrow(train_resps)/sum(train_resps$injuries_3 == 1)
+
+fit_3w <- xgboost(dtrain_3,  # Set dataset to use
+                 nrounds = 100, # Set number of rounds
+               eta = 0.1,
+               verbose = 1, # 1 - Prints out fit
+                print_every_n = 20, # Prints out result every 20th iteration
+               
+               objective = "binary:logistic", # Set objective
+               eval_metric = "auc",
+               eval_metric = "error",
+               
+               weight = weight_vec) # Set weight vector
+```
+
+```{r}
+boost_preds_3w <- predict(fit_3w, dtest_3) # Create predictions for xgboost model
+
+# Convert predictions to classes, using optimal cut-off
+boost_pred_class <- rep(0, length(boost_preds_3w))
+boost_pred_class[boost_preds_3w >= cut_off] <- 1
+
+
+t <- table(boost_pred_class, test_resps$injuries_3) # Create table
+confusionMatrix(t, positive = "1") # Produce confusion matrix
+```
+
+We now see we have a balanced accuracy of 71.06% and a sensitivity of 62.2%. Again we still have considerable problem with false positives in this model. 
+
+Now we can create a SHAP importance plot for this model:
+
+```{r}
+# Calculate SHAP importance
+shap_result_3 <- shap.score.rank(xgb_model = fit_3w, 
+                X_train =as.matrix(train_dat),
+                shap_approx = F)
+# Calculate data for SHAP plot
+shap_long_3 = shap.prep(shap = shap_result_3,
+                           X_train = as.matrix(train_dat), 
+                           top_n = 10)
+
+# Generate SHAP plot
+plot.shap.summary(data_long = shap_long_3)
+```
+
+Nordic strength has now become the key variable for this model with high speed running in second and third place. 
+
+
+
+### Some thoughts on model results
+
+For the first model, where only high risk players get injured, this likely represents a good situation to deploy our injury model. With only 20 injuries missed by our final model and just slightly more false positives than injuries detected we would feel comfortable making use of this model to predict injuries and rest players who are at risk. Here for the price of 153 injuries avoided we would only miss 223 training/game days which is a far trade off. 
+
+For the second model, where there is a high variance in injury occurance, we would want to improve further on the model before deploying it. For the price of 142 injuries avoided we are missing 406 training days which is considerable. In this scenario it is likely that there are additional variables which we would like to collect to get a better picture of injury occurace. While not usable for injury prediction the variable importance from this model could be use to find variables which are likely leading to injury and then giving recommendations to trainers to alter certain aspects of training or to athletes regarding muscle strengthing exercises to focus on. 
+
+
+For the third model, where moderate to high risk players get injured, we could potentially deploy the model. Here we are detecting 443 injuries at the cost of 765 training days. Of course, this quantity of injuries is unlikely to be found in the real-world. Again however the variable importance could be used to extract some insights regarding specific metrics to focus on. 
+
+### Model Result Comparisons
+
+We have up till now analysed all the models using a cut-off value, let's visualise the differences using an ROC plot:
+
+```{r}
+# Calculate first model ROC
+roc1 = roc(test_resps$injuries_1, boost_preds_1w)
+# Calculate final model ROC
+roc2 = roc(test_resps$injuries_2, boost_preds_2w)
+# Calculate final model ROC
+roc3 = roc(test_resps$injuries_3, boost_preds_3w)
+
+# Print initial model AUC
+plot.roc(roc1, print.auc = TRUE, print.auc.x = 0, print.auc.y = 0.8, col = "red", print.auc.col = "red")
+# Print final model AUC
+plot.roc(roc2, print.auc = TRUE, print.auc.x = 0, print.auc.y = 0.6, col ="blue", print.auc.col = "blue", add = TRUE)
+# Print final model AUC
+plot.roc(roc3, print.auc = TRUE, print.auc.x = 0, print.auc.y = 0.4, col ="yellow", print.auc.col = "yellow", add = TRUE)
+
+```
+
+Here we can clearly see a strong decline in the accuracy as our response variable gets noisier. 
+
+## Volcano Summary
+
+Let's try and visualise the differences in the variables coming from our models. A plot we can adopt the style of is a volcano plot. Usually these plots have the log fold difference between the variables on the x-axis and the p-value of the difference on the y-axis. 
+
+We will modify this to put the difference in the SHAP scores for the injured and non-injured samples on the y-axis and the difference in size of the scaled variables on the x-axis.
+
+Let's first extract the data we are interested in, being the SHAP scores and mean scaled variable sizes for each variable:
+```{r}
+# Extract SHAP values from SHAP result for the first model 
+shap_data <- as.data.frame(shap_result_1$shap_score)
+# Extract variable names from the SHAP data
+vars <- names(shap_data)
+# Create result matrix to store results
+res_mat <- as.data.frame(matrix(NA, nrow = length(vars), ncol = 4))
+# Scale results
+s_train <- scale(train_dat)
+#For each variable
+for(i in 1:length(vars)){
+  # Calculate mean SHAP score for healthy samples
+  res_mat[i,1] <- mean(shap_data[train_resps$injuries_1 == 0, vars[i]])
+  # Calcualte mean SHAP score for injured samples
+  res_mat[i,2] <- mean(shap_data[train_resps$injuries_1 == 1, vars[i]])
+  # Calculate mean scaled variable value for healthy samples
+  res_mat[i,3] <- mean(s_train[train_resps$injuries_1 == 0, vars[i]])
+  # Calcualte mean scaled variable value for injured samples
+  res_mat[i,4] <- mean(s_train[train_resps$injuries_1 == 1, vars[i]])
+}
+
+# Create column of variables
+res_mat$var <- vars
+```
+
+Next we need to calculate the differences between the healthy and injured samples:
+
+```{r}
+# Calculate difference between healthy and injured samples for SHAP score
+res_mat$shap_diff <- res_mat[,2] - res_mat[,1]
+# Calculate difference between healthy and injured samples for scaled variables
+res_mat$met_diff <- res_mat[,4] - res_mat[,3]
+```
+
+We are going to scale the colors in the plot to highlight important variables, we will be base this on the absolute value of the shap values and scaled variables:
+
+```{r}
+# Create color column as absolute value of SHAP differences and metric differences
+res_mat$color_scale <- abs(res_mat$shap_diff) + abs(res_mat$met_diff)
+```
+
+We also want to label important variables in the plot. For this we do not want to label unimportant variables. So we will select variables which have:
+
+* A SHAP difference greater than 0.5
+* A SHAP difference greater than 0.1 and a metric difference greater than 1
+* A metric difference greater than 2
+
+```{r}
+# Create binary selected variable indicator
+sel_vars <- (abs(res_mat$shap_diff) > 0.5) | 
+            ((abs(res_mat$met_diff) > 1) & (abs(res_mat$shap_diff) > 0.1)) |
+            (abs(res_mat$met_diff) > 2)
+```
+
+We are now ready to create the plot:
+
+```{r}
+# Create plot
+g_5 <- ggplot(res_mat, # Set dataset
+              aes(x = met_diff, y = shap_diff, color= color_scale)) + # Set aesthetics
+  geom_point() + # Add geom point for scatter plot
+  theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+  labs(x = "Difference in scaled values", # Add labels to plot
+       y = "Difference in SHAP values",
+       title = "Volcano Plot - Injury Variables") +
+  geom_text_repel(data = res_mat[sel_vars,] , # Add labels to selected points using test_repel
+                  aes(label = var, x = met_diff, y = shap_diff),
+                  color = "white", inherit.aes = FALSE,
+                  size =3) +
+  scale_color_gradient(low = "red", # Scale color gradient
+                        high = "yellow",
+                        aesthetics = "colour") +
+  dark_theme_bw() + # Dark theme
+  guides(color = FALSE) # Turn off color legend
+
+# Generate plot
+g_5
+# Turn off dark mode
+invert_geom_defaults()
+```
+
+Here we can see that having high values of HSR A:C 28:56 and Total distance A:C 28:56 are key indicators for injury. We can also see several other variables that are likely useful to monitor for injury. 
+
+
+# Exercises
+
+For these exercises try running an XGBoost model on the fourth simulated injury column. This is the case where moderate to high risk players get injured (high variance).Let's take a look at the distribution of the injuries vs injury risk once more:
+
+```{r}
+# Create plot
+i4 <- ggplot(injuries, # Set dataset
+               aes(x = injury_risk, fill = factor(injuries_4))) + # Set x and fill
+  geom_histogram(alpha = 0.5, position = "dodge") + # Set histogram
+   theme(axis.line = element_line(colour = "black"), # Set axis line as black
+        panel.grid.major = element_blank(), # Remove grid
+        panel.grid.minor = element_blank(), # Remove grid
+        panel.border = element_blank(), # Remove grid
+        panel.background = element_blank()) + # Remove grid 
+labs(x = "Injury Risk", fill = "Injured", # Set labels
+     title = "Simulated Injury Risk") +
+  scale_fill_manual(values= c("1" = "red", "0" = "blue"), # Set colors manually
+                     labels = c("1" = "Injured", "0" = "Healthy")) +
+  scale_x_continuous(breaks=seq(0, 8, 1)) 
+# Generate plot
+i4
+```
+
+
+
+* Given the distribution of the injury compared to injury risk, would you expect this model to perform better or worse than the previous models?
+
+
+* Create the xgb.DMatrix objects for XGBoost
+
+```{r}
+# Create train and test data
+dtrain_4 <- xgb.DMatrix(data = as.matrix(train_dat), label = train_resps$injuries_4)
+dtest_4 <- xgb.DMatrix(data = as.matrix(test_dat), label = test_resps$injuries_4)
+```
+
+* Run an XGBoost with the default parameters?
+```{r}
+fit_4 <- xgboost(dtrain_4,  # Set dataset to use
+                 nrounds = 100, # Set number of rounds
+               
+               verbose = 1, # 1 - Prints out fit
+                print_every_n = 20, # Prints out result every 20th iteration
+               
+               objective = "binary:logistic", # Set objective
+               eval_metric = "auc",
+               eval_metric = "error")
+```
+
+
+* Create a confusion matrix and view the balanced accuracy of this model.
+```{r}
+boost_preds_4 <- predict(fit_4, dtest_4) # Create predictions for xgboost model
+
+# Convert predictions to classes, using optimal cut-off
+boost_pred_class <- rep(0, length(boost_preds_4))
+boost_pred_class[boost_preds_4 >= 0.5] <- 1
+
+
+t <- table(boost_pred_class, test_resps$injuries_4) # Create table
+confusionMatrix(t, positive = "1") # Produce confusion matrix
+```
+
+
+* Try changing the cut-off, what is the new balanced accuracy?
+```{r}
+# Create cut-off as proportion of samples of minority class
+cut_off <- sum(train_resps$injuries_4 == 1)/nrow(train_resps)
+
+boost_preds_4 <- predict(fit_4, dtest_4) # Create predictions for xgboost model
+
+# Convert predictions to classes, using optimal cut-off
+boost_pred_class <- rep(0, length(boost_preds_4))
+boost_pred_class[boost_preds_4 >= cut_off] <- 1
+
+
+t <- table(boost_pred_class, test_resps$injuries_4) # Create table
+confusionMatrix(t, positive = "1") # Produce confusion matrix
+```
+
+
+* Try setting the weights for XGBoost.
+
+```{r}
+# Create weight vector 
+weight_vec <- rep(1, nrow(train_resps))
+# Assign higher weight to injured samples
+weight_vec[train_resps$injuries_4 == 1] <- nrow(train_resps)/sum(train_resps$injuries_4 == 1)
+
+fit_4w <- xgboost(dtrain_4,  # Set dataset to use
+                 nrounds = 100, # Set number of rounds
+               eta = 0.1,
+               verbose = 1, # 1 - Prints out fit
+                print_every_n = 20, # Prints out result every 20th iteration
+               
+               objective = "binary:logistic", # Set objective
+               eval_metric = "auc",
+               eval_metric = "error",
+               
+               weight = weight_vec) # Set weight vector
+```
+
+* What is the new balanced accuracy and sensitivity?
+```{r}
+boost_preds_4w <- predict(fit_4w, dtest_4) # Create predictions for xgboost model
+
+# Convert predictions to classes, using optimal cut-off
+boost_pred_class <- rep(0, length(boost_preds_4w))
+boost_pred_class[boost_preds_4w >= cut_off] <- 1
+
+
+t <- table(boost_pred_class, test_resps$injuries_4) # Create table
+confusionMatrix(t, positive = "1") # Produce confusion matrix
+```
+
+
+* Create a SHAP importance plot for this model.
+```{r}
+# Calculate SHAP importance
+shap_result_4 <- shap.score.rank(xgb_model = fit_4w, 
+                X_train =as.matrix(train_dat),
+                shap_approx = F)
+```
+```{r}
+# Calculate data for SHAP plot
+shap_long_4 = shap.prep(shap = shap_result_4,
+                           X_train = as.matrix(train_dat), 
+                           top_n = 10)
+
+# Generate SHAP plot
+plot.shap.summary(data_long = shap_long_4)
+```
+
+
+
+* What are the most important variables?
+
+Here we again see Nordic strength as the most important variable while, high speed running metrics make up the second and third most important variables.
+
+
+* Add this model to the ROC plot, does it perform better or worse compared to the other models?
+```{r}
+# Calculate first model ROC
+roc1 = roc(test_resps$injuries_1, boost_preds_1w)
+# Calculate final model ROC
+roc2 = roc(test_resps$injuries_2, boost_preds_2w)
+# Calculate final model ROC
+roc3 = roc(test_resps$injuries_3, boost_preds_3w)
+# Calculate final model ROC
+roc4 = roc(test_resps$injuries_4, boost_preds_4w)
+# Print initial model AUC
+plot.roc(roc1, print.auc = TRUE, print.auc.x = 0, print.auc.y = 0.8, col = "red", print.auc.col = "red")
+# Print final model AUC
+plot.roc(roc2, print.auc = TRUE, print.auc.x = 0, print.auc.y = 0.6, col ="blue", print.auc.col = "blue", add = TRUE)
+# Print final model AUC
+plot.roc(roc3, print.auc = TRUE, print.auc.x = 0, print.auc.y = 0.4, col ="yellow", print.auc.col = "yellow", add = TRUE)
+# Print final model AUC
+plot.roc(roc4, print.auc = TRUE, print.auc.x = 0, print.auc.y = 0.2, col ="pink", print.auc.col = "pink", add = TRUE)
+```
+
+* Could this model be deployed in practice:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

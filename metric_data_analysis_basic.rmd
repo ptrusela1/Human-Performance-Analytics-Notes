@@ -1,0 +1,420 @@
+---
+title: "Metric Analysis"
+author: "Mendoza College of Business"
+date: "3/11/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction to Metric Analysis
+
+In this workbook we are going to work through some preliminary analysis that can be done using self collected metrics.
+
+
+
+
+## Preliminaries
+
+Let's load in the packages we are going to use for the analysis:
+
+```{r}
+#install.packages("ggplot2") # install ggplot2
+#install.packages("ggdark") # install ggdark
+#install.packages("data.table") # install data.table
+library(ggplot2) # load ggplot2
+library(ggdark) # load ggdark
+library(data.table) # load data.table
+```
+
+Let's load some data to look at:
+
+```{r}
+# load in data
+load("metric_data_2020.rda")
+```
+
+
+## Preliminary Data Investigation
+
+Before we start graphing the dataset, let's check the data quality by viewing the first few rows of the data, `head()`, the last few rows of the data, `tail()`, the dimensions of the data set, `dim()`, and a summary of the data, `summary()`.
+
+
+```{r}
+head(metric_data) # View first few rows of data
+```
+
+Here we see the morning metrics are complete during the first few rows but the evening metrics and others are not well recorded intially. 
+
+
+```{r}
+tail(metric_data) # View last few rows of the data
+```
+
+For the last few rows the metrics are present except for productivity, which is missing likely due to time off. 
+
+
+
+```{r}
+dim(metric_data) # View dimensions of the data
+```
+
+We see there are 366 rows in the data corresponding to the year of 2020 and 11 columns of data. 
+
+
+```{r}
+summary(metric_data) # Summarise metric data
+```
+
+We see there are much much more missing values for several of the metrics than others, these are generally the evening metrics.
+
+Data Context:
+
+Missing values either represent being too busy to record metrics or a time on holidays. This highlights the importance of having context around the data to know which is which when trying to interpret it. 
+
+
+## Data Time Line
+
+Next let's look at the data over time and see what we can find in the data. First we need to melt the data to long form:
+
+```{r}
+# Melt data
+plot_dat <- melt(metric_data[, !names(metric_data) %in% c("Sleep_Hours")], id.vars = c("Date", "Day"))
+```
+
+We now want to plot this out. Since there are only five potential values for the data to take, we will use `geom_jitter` to spread the points at each level out. 
+
+```{r}
+# Create plot
+g_1 <- ggplot(plot_dat, # Set data
+              aes(x = Date, y = value, color = variable))+ # Set aesthetics
+  geom_jitter(alpha = 0.2, height =0.1, aes(fill = variable))+ # Add points
+  geom_smooth(se = FALSE) + # Add smooting line
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + # Turn off grid
+  dark_theme_minimal() + # Set theme
+  labs(title = "Metrics - 2020", # Set labels
+       color = "Metric") +
+  guides(fill = "none")
+
+# Generate plot
+g_1
+# Turn off dark mode
+invert_geom_defaults()
+```
+
+From the initial timeline we can see in general the metrics were at low values to start the year, rose in the middle, fell again later in the year and finally increased towards the end of the year. 
+
+Again, for personal metrics, the context for the metrics is key. So let's add in some events to the graph. 
+
+First let's extract the dates from the data and view them:
+```{r}
+# Extract unique dates
+date_vec <- unique(metric_data$Date)
+# View dates
+date_vec
+```
+
+
+Now that we know the row locations of each date, let's add in some events:
+
+* 1 - March 2nd - Visit Irish Universities with Notre Dame (Row 62)
+* 2 - March 18th - Lockdown (Row 78)
+* 3 - June 11th - Left Job (Row 163)
+* 4 - July 18th - Flew to Toronto (Row 200)
+* 5 - August 10th - Start of Semester (Row 223)
+* 6 - September 29th - Start of Mod 2 (Row 273)
+* 7 - November 24th - End of Semester (Row 329)
+* 8 - December 26th - Trip to Boston (Row 361)
+
+
+```{r}
+# Create plot
+g_2 <- ggplot(plot_dat, # Set data
+              aes(x = Date, y = value, color = variable))+ # Set aesthetics
+  geom_jitter(alpha = 0.4, height =0.1, aes(fill = variable))+ # Add points
+  geom_smooth(se = FALSE) + # Add smoothing line
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + # Turn off grid
+  dark_theme_minimal() + # Set theme
+  labs(title = "Metrics - 2020", # Add labels
+       color = "Metric") +
+  guides(fill = "none") +
+  geom_vline(xintercept = date_vec[62], color = "gold") + # Add line for event
+  geom_text(aes(x = date_vec[50], y =4.5 , label = "ND\nVisit"), color = "gold") + # Add label for event
+  geom_vline(xintercept = date_vec[78], color = "blue") + # Add line for event
+  geom_text(aes(x = date_vec[90], y =1.5 , label = "Lockdown"), color = "blue") + # Add label for event
+  geom_vline(xintercept = date_vec[163], color = "Yellow") + # Add line for event
+  geom_text(aes(x = date_vec[168], y =0.5 , label = "Left Job"), color = "Yellow") + # Add label for event
+  geom_vline(xintercept = date_vec[200], color = "red") + # Add line for event
+  geom_text(aes(x = date_vec[205], y =1.5 , label = "Toronto"), color = "red") + # Add label for event
+  geom_vline(xintercept = date_vec[223], color = "gold") + # Add line for event
+  geom_text(aes(x = date_vec[223], y =4.5 , label = "Semester\nStart"), color = "gold") + # Add label for event
+  geom_vline(xintercept = date_vec[273], color = "Blue") + # Add line for event
+  geom_text(aes(x = date_vec[278], y =1.5 , label = "Mod 2"), color = "Blue") + # Add label for event
+  geom_vline(xintercept = date_vec[329], color = "gold") + # Add line for event
+  geom_text(aes(x = date_vec[335], y =4.5 , label = "Semester\nEnd"), color = "gold")  + # Add label for event
+  geom_vline(xintercept = date_vec[361], color = "Purple") + # Add line for event
+  geom_text(aes(x = date_vec[365], y =3.5 , label = "Boston"), color = "Purple") # Add label for event
+  
+# Generate plot
+g_2
+# Turn off dark mode
+invert_geom_defaults()
+```
+
+
+Here see a pretty steady increase in all metrics during the lockdown phase of the year, a decline during the semester and a rise again towards the end of the year. 
+
+Let's look at some individual metrics since the chart above is quite busy:
+
+
+```{r}
+# Create plot
+g_3 <- ggplot(plot_dat[plot_dat$variable == "Productivity",], # Set data
+              aes(x = Date, y = value))+ # Set aesthetics
+  geom_jitter(alpha = 0.4, height =0.1,  color = "blue")+ # Add points
+  geom_smooth(se = FALSE, color = "yellow") + # Add smoothing line
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + # Turn off grid
+  dark_theme_minimal() + # Set theme
+  labs(title = "Productivity - 2020") + # Add labels
+  guides(fill = "none") +
+  geom_vline(xintercept = date_vec[62], color = "gold") + # Add line for event
+  geom_text(aes(x = date_vec[50], y =4.5 , label = "ND\nVisit"), color = "gold") + # Add label for event
+  geom_vline(xintercept = date_vec[78], color = "blue") + # Add line for event
+  geom_text(aes(x = date_vec[90], y =1.5 , label = "Lockdown"), color = "blue") + # Add label for event
+  geom_vline(xintercept = date_vec[163], color = "Yellow") + # Add line for event
+  geom_text(aes(x = date_vec[168], y =0.5 , label = "Left Job"), color = "Yellow") + # Add label for event
+  geom_vline(xintercept = date_vec[200], color = "red") + # Add line for event
+  geom_text(aes(x = date_vec[205], y =1.5 , label = "Toronto"), color = "red") + # Add label for event
+  geom_vline(xintercept = date_vec[223], color = "gold") + # Add line for event
+  geom_text(aes(x = date_vec[223], y =4.5 , label = "Semester\nStart"), color = "gold") + # Add label for event
+  geom_vline(xintercept = date_vec[273], color = "Blue") + # Add line for event
+  geom_text(aes(x = date_vec[278], y =1.5 , label = "Mod 2"), color = "Blue") + # Add label for event
+  geom_vline(xintercept = date_vec[329], color = "gold") + # Add line for event
+  geom_text(aes(x = date_vec[335], y =4.5 , label = "Semester\nEnd"), color = "gold")  + # Add label for event
+  geom_vline(xintercept = date_vec[361], color = "Purple") + # Add line for event
+  geom_text(aes(x = date_vec[365], y =3.5 , label = "Boston"), color = "Purple") # Add label for event
+  
+# Generate plot
+g_3
+# Turn off dark mode
+invert_geom_defaults()
+```
+
+
+We see here that productivity was not being recorded prior to lockdown, remained fairly constant from then on, until towards the end of the semester. Notably in mod 2, there were no days where productivity was at a 5 after the start of the module. 
+
+Let's look at another metric:
+
+```{r}
+# Create plot
+g_4 <- ggplot(plot_dat[plot_dat$variable == "Wake_Up",], # Set data
+              aes(x = Date, y = value))+ # Set aesthetics
+  geom_jitter(alpha = 0.4, height =0.1,  color = "blue")+ # Add points
+  geom_smooth(se = FALSE, color = "yellow") + # Add smoothing line
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + # Turn off grid
+  dark_theme_minimal() + # Set theme
+  labs(title = "Wake Up - 2020") + # Add labels
+  geom_vline(xintercept = date_vec[62], color = "gold") + # Add line for event
+  geom_text(aes(x = date_vec[50], y =4.5 , label = "ND\nVisit"), color = "gold") + # Add label for event
+  geom_vline(xintercept = date_vec[78], color = "blue") + # Add line for event
+  geom_text(aes(x = date_vec[90], y =1.5 , label = "Lockdown"), color = "blue") + # Add label for event
+  geom_vline(xintercept = date_vec[163], color = "Yellow") + # Add line for event
+  geom_text(aes(x = date_vec[168], y =0.5 , label = "Left Job"), color = "Yellow") + # Add label for event
+  geom_vline(xintercept = date_vec[200], color = "red") + # Add line for event
+  geom_text(aes(x = date_vec[205], y =1.5 , label = "Toronto"), color = "red") + # Add label for event
+  geom_vline(xintercept = date_vec[223], color = "gold") + # Add line for event
+  geom_text(aes(x = date_vec[223], y =4.5 , label = "Semester\nStart"), color = "gold") + # Add label for event
+  geom_vline(xintercept = date_vec[273], color = "Blue") + # Add line for event
+  geom_text(aes(x = date_vec[278], y =1.5 , label = "Mod 2"), color = "Blue") + # Add label for event
+  geom_vline(xintercept = date_vec[329], color = "gold") + # Add line for event
+  geom_text(aes(x = date_vec[335], y =4.5 , label = "Semester\nEnd"), color = "gold")  + # Add label for event
+  geom_vline(xintercept = date_vec[361], color = "Purple") + # Add line for event
+  geom_text(aes(x = date_vec[365], y =3.5 , label = "Boston"), color = "Purple") # Add label for event
+  
+# Generate plot
+g_4
+# Turn off dark mode
+invert_geom_defaults()
+```
+
+
+Here we see this was hitting pretty poor values prior to lockdown, improved over the summer and declined slightly during the semester. 
+
+Let's contrast this with sleep hours:
+
+```{r}
+# Create plot
+g_5 <- ggplot(metric_data, # Set data
+              aes(x = Date, y = Sleep_Hours))+ # Set aesthetics
+  geom_jitter(alpha = 0.4, height =0.1,  color = "blue")+ # Add points
+  geom_smooth(se = FALSE, color = "yellow") + # Add smoothing line
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + # Turn off grid
+  dark_theme_minimal() + # Set theme
+  labs(title = "Sleep Hours - 2020") + # Add labels
+  geom_vline(xintercept = date_vec[62], color = "gold") + # Add line for event
+  geom_text(aes(x = date_vec[50], y =4.5 , label = "ND\nVisit"), color = "gold") + # Add label for event
+  geom_vline(xintercept = date_vec[78], color = "blue") + # Add line for event
+  geom_text(aes(x = date_vec[90], y =1.5 , label = "Lockdown"), color = "blue") + # Add label for event
+  geom_vline(xintercept = date_vec[163], color = "Yellow") + # Add line for event
+  geom_text(aes(x = date_vec[168], y =0.5 , label = "Left Job"), color = "Yellow") + # Add label for event
+  geom_vline(xintercept = date_vec[200], color = "red") + # Add line for event
+  geom_text(aes(x = date_vec[205], y =1.5 , label = "Toronto"), color = "red") + # Add label for event
+  geom_vline(xintercept = date_vec[223], color = "gold") + # Add line for event
+  geom_text(aes(x = date_vec[223], y =4.5 , label = "Semester\nStart"), color = "gold") + # Add label for event
+  geom_vline(xintercept = date_vec[273], color = "Blue") + # Add line for event
+  geom_text(aes(x = date_vec[278], y =1.5 , label = "Mod 2"), color = "Blue") + # Add label for event
+  geom_vline(xintercept = date_vec[329], color = "gold") + # Add line for event
+  geom_text(aes(x = date_vec[335], y =4.5 , label = "Semester\nEnd"), color = "gold")  + # Add label for event
+  geom_vline(xintercept = date_vec[361], color = "Purple") + # Add line for event
+  geom_text(aes(x = date_vec[365], y =3.5 , label = "Boston"), color = "Purple") # Add label for event
+  
+# Generate plot
+g_5
+# Turn off dark mode
+invert_geom_defaults()
+```
+
+Here see this was not recorded prior to the start of lockdown. It was pretty good during the summer with a couple of outliers while traveling. 
+
+## Investigating Relationships
+
+Let's look at the relationship between productivity and sleep hours:
+
+```{r}
+# Create plot
+g_6 <- ggplot(metric_data, # Set data
+              aes(x = Sleep_Hours, y = Productivity)) + # Set aesthetics
+  geom_jitter(color = "blue", alpha = 0.4, height =0.1) + # Add point
+  geom_smooth(color = "yellow") + # Add smoothing line
+   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + # Turn off grid
+  dark_theme_minimal() + # Set theme
+  labs(title = "Sleep Hours vs Productivity - 2020") # Add labels
+
+# Generate plot
+g_6
+# Turn off dark mode
+invert_geom_defaults()
+```
+
+Here it looks like productivity was optimised with between 7 to 9 hours sleep. 
+
+Since hours of sleep does not tell the full story, let's look at the relationship between wake up and productivity
+
+```{r}
+# Create plot
+g_7 <- ggplot(metric_data, # Set data
+              aes(x = Wake_Up, y = Productivity)) + # Set aesthetics
+  geom_jitter(color = "blue", alpha = 0.4, height =0.1) + # Add point
+  geom_smooth(color = "yellow") + # Add smoothing line
+   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + # Turn off grid
+  dark_theme_minimal() + # Set theme
+  labs(title = "Wake Up vs Productivity - 2020") # Add labels
+
+# Generate plot
+g_7
+# Turn off dark mode
+invert_geom_defaults()
+```
+
+Here we see a much more positive relationship where a higher wake up quality leads to a more productive day. 
+
+## Day of Week Analysis
+
+We can also look at metrics for different days of the week. 
+
+Let's first look at sleep hours by the day of the week. To get this to have the correct order when we plot it out, we need to convert day into a factor and set the ordering of the levels:
+
+```{r}
+# Convert days to factor and manually set levels
+metric_data$Day <- factor(metric_data$Day, levels = c("Monday", "Tuesday", "Wednesday",
+                                                      "Thursday", "Friday", "Saturday",
+                                                      "Sunday"))
+```
+
+Now we can plot this out and it will display the days of the week in order
+
+```{r}
+# Create plot
+g_8 <- ggplot(metric_data,  # Set data set
+              aes(x = Day, y = Sleep_Hours, fill = Day)) + # Set aesthetics
+  geom_boxplot(alpha = 0.5) +
+   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + # Turn off grid
+  dark_theme_minimal() + # Set theme
+  labs(title = "Sleep Hours by Day - 2020") # Add labels
+
+# Generate plot
+g_8
+# Turn off dark mode
+invert_geom_defaults()
+```
+
+Here see that Monday and Sunday were the best days for getting sleep during the year of 2020. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
